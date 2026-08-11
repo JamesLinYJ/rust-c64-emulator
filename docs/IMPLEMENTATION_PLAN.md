@@ -47,7 +47,7 @@ Cartridge 与程序语料无差异。参考资产下载采用哈希校验、有�
 - [x] 迁移 CRT、普通 8K/16K/Ultimax、Ocean、Magic Desk、EasyFlash 与 AM29F040B 状态机。
 - [x] 迁移 REU。
 - [x] 把版本化架构状态扩展到全部芯片、外设、媒体和指令中间周期，并保留 save-state v1 向后兼容。
-- [ ] 所有参考测试一致后切换生产 Strict；TypeScript 核心转为测试 oracle。
+- [x] 所有参考测试一致后切换生产 Strict；TypeScript 核心转为测试 oracle。
 
 验收：全部 256 opcode、IRQ/NMI/RDY/BA/AEC、设备参考轨迹、程序、视频和音频零语义回归。
 
@@ -77,6 +77,14 @@ VIC 优先停顿、隐藏 RAM/页 generation、扩展槽互斥和粗粒度 Wasm 
 恢复并确定性继续。C64 firmware 由目标 runtime 注入，不写入状态文件。提交 `8948f68` 通过本地
 完整 Rust/TypeScript/Wasm/VICE 门禁及远端 [CI run 31491094157](https://github.com/JamesLinYJ/rust-c64-emulator/actions/runs/31491094157) 的全部 job。
 
+生产 Strict 验收证据（2026年08月11日）：提交 `b6c6fdf` 将真实 firmware 注入的 Rust/Wasm
+整机放入 module Worker，生产 React 页面不再实例化 TypeScript 硬件；键盘/双控制口/RESTORE、
+BASIC PRG、完整 VIC 帧和 SID PCM 均通过粗粒度消息边界。帧与 PCM 使用有界可回收 Transferable
+双缓冲，TypeScript 核心仅保留为测试 oracle。本地完整 Rust、TypeScript、Wasm、VICE 参考链、
+Sites 无 source map 打包及 Chromium 桌面/移动端门禁通过；提交 `d5fcae5` 修正 CI 只测试普通
+Vite bundle 的缺口，远端 [CI run 31496827909](https://github.com/JamesLinYJ/rust-c64-emulator/actions/runs/31496827909)
+确认 Node 22/24、Rust/Wasm、Sites 生产产物与 Chromium smoke 全部通过。
+
 ## M2：Turbo 语义
 
 - [ ] 实现每系统周期 2..64 个内部 CPU 槽位和一次性锁定 Auto 档位。
@@ -98,9 +106,9 @@ VIC 优先停顿、隐藏 RAM/页 generation、扩展槽互斥和粗粒度 Wasm 
 
 ## M4：平台运行时
 
-- [ ] 将 Wasm VM 放入 module Worker。
+- [x] 将 Wasm VM 放入 module Worker。
 - [ ] 定义 run/pause/reset/media/input/state/diagnostics 命令协议。
-- [ ] 实现可回收 Transferable 帧/PCM 缓冲；SAB 与 simd128 仅作可选优化。
+- [x] 实现可回收 Transferable 帧/PCM 缓冲；SAB 与 simd128 仅作可选优化。
 - [ ] Chrome/Edge、Firefox、WebKit、Node 使用同一 Rust 核心。
 
 验收：PAL 50 Hz、NTSC 60 Hz 稳定，UI 不阻塞，参考机器无音频 underrun。
