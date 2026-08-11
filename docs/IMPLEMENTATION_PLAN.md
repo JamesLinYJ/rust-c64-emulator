@@ -120,8 +120,14 @@ D64/G64 媒体控制，Transferable 所有权和 64 位计数器 high/low 边界
 module Worker/Wasm 启动、PAL 帧推进、暂停/单帧/恢复及 BASIC PRG 执行，Node 使用同一
 `c64-core` 生成物。远端 [CI run 31507556499](https://github.com/JamesLinYJ/rust-c64-emulator/actions/runs/31507556499)
 的五个 job 全部成功；Chrome、Edge、WebKit 为 50 host FPS，Firefox 为 12 host FPS。因此本项只
-关闭“同一 Rust 核心”语义兼容，M4 总验收仍需真实 NTSC 60 Hz、Firefox 实时性能和零音频
-underrun，不得据此宣称平台运行时整体完成。
+关闭“同一 Rust 核心”语义兼容。
+
+PAL/NTSC 与音频本地验收增补（2026年08月12日）：提交 `a18e9d7` 将 MOS 6567R8 的
+65×263 周期表、247 行可见帧、整数时钟元数据和动态 Worker 节拍接入 `C64Chipset` 与生产页面；
+同一 Sites release 产物在 Chromium 达到 PAL 50 FPS、NTSC 60 FPS，二者均为 0/120 超预算且
+AudioWorklet 欠载/溢出计数为零。Firefox 功能路径从 12 提升到 18 host FPS，但仍未达到实时；
+远端跨浏览器 CI 通过前，本增补也不能视为最终验收。因此 M4 总验收仍缺 Firefox 实时性能，
+不得据此宣称平台运行时整体完成。
 
 ## M5：SuperCPU
 
