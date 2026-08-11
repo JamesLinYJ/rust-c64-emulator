@@ -164,6 +164,62 @@ impl C64Vm {
         low_u32(self.core.memory().memory_generation())
     }
 
+    /// Parse and attach one CRT image in a single coarse ABI call.
+    ///
+    /// # Errors
+    ///
+    /// Rejects malformed media, unsupported hardware or an occupied slot.
+    pub fn insert_crt(
+        &mut self,
+        bytes: &[u8],
+        easy_flash_jumper_installed: bool,
+    ) -> Result<(), JsError> {
+        self.core
+            .insert_crt(bytes, easy_flash_jumper_installed)
+            .map_err(to_js_error)
+    }
+
+    /// Detach the expansion-port cartridge.
+    ///
+    /// # Errors
+    ///
+    /// Rejects an empty slot or an internal CPU slot.
+    pub fn eject_cartridge(&mut self) -> Result<(), JsError> {
+        self.core.eject_cartridge().map(|_| ()).map_err(to_js_error)
+    }
+
+    pub fn cartridge_attached(&self) -> bool {
+        self.core.cartridge_attached()
+    }
+
+    pub fn cartridge_kind(&self) -> u16 {
+        self.core
+            .cartridge_kind()
+            .map_or(u16::MAX, c64_core::devices::cartridge::CartridgeKind::code)
+    }
+
+    pub fn easyflash_dirty(&self) -> bool {
+        self.core.easyflash_dirty().unwrap_or(false)
+    }
+
+    /// Copy the physical `EasyFlash` ROML chip in one coarse persistence call.
+    ///
+    /// # Errors
+    ///
+    /// Requires an attached `EasyFlash` board.
+    pub fn export_easyflash_low(&self) -> Result<Vec<u8>, JsError> {
+        self.core.export_easyflash_low().map_err(to_js_error)
+    }
+
+    /// Copy the physical `EasyFlash` ROMH chip in one coarse persistence call.
+    ///
+    /// # Errors
+    ///
+    /// Requires an attached `EasyFlash` board.
+    pub fn export_easyflash_high(&self) -> Result<Vec<u8>, JsError> {
+        self.core.export_easyflash_high().map_err(to_js_error)
+    }
+
     /// Parse and insert a read-only TAP image. A zero legacy duration means
     /// that ambiguous TAP v0 zero markers remain rejected.
     ///

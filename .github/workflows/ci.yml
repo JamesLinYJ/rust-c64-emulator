@@ -95,6 +95,12 @@ jobs:
       - name: Run Rust Datasette VICE reference gate
         run: npm run verify:tape:rust
 
+      - name: Run Rust cartridge VICE reference gate
+        run: npm run verify:cartridge:rust
+
+      - name: Run Rust EasyFlash official reference gate
+        run: npm run verify:easyflash:rust
+
       - name: Install pinned wasm-pack
         run: cargo install wasm-pack --version 0.15.0 --locked
 

@@ -8,6 +8,7 @@
 //   Author:     OpenAI Codex
 // --------------------------------------------------------------------------
 
+pub mod crt;
 pub mod d64;
 pub mod g64;
 pub mod tap;

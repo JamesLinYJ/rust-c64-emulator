@@ -44,7 +44,8 @@ Cartridge 与程序语料无差异。参考资产下载采用哈希校验、有�
 - [x] 迁移 VIC-II、CIA、SID 和主机严格调度器。
 - [ ] 完成 1541 整机迁移；Rust 整机与目录/LOAD/SAVE/format 阶段门禁已通过，完整 VICE `verify:drive` 集合仍待迁移验收。
 - [x] 迁移 Datasette、TAP/Writable TAP、6510 motor/write/sense/read 接线与粗粒度 Wasm 媒体 ABI。
-- [ ] 迁移 Cartridge/EasyFlash 和 REU。
+- [x] 迁移 CRT、普通 8K/16K/Ultimax、Ocean、Magic Desk、EasyFlash 与 AM29F040B 状态机。
+- [ ] 迁移 REU。
 - [ ] 把版本化架构状态扩展到全部芯片/外设；现有 trace 和 TypeScript/Rust 差分适配器继续补齐。
 - [ ] 所有参考测试一致后切换生产 Strict；TypeScript 核心转为测试 oracle。
 
@@ -54,6 +55,11 @@ Datasette 验收证据（2026年08月11日）：Rust KERNAL LOAD 消耗 43,734 �
 `$C000-$C03F` 得到固定载荷；VICE revision 46176 `tap204060once.prg` 产生
 `256/512/768/512` 周期尾波形；KERNAL SAVE/新机 LOAD 的 41,756 个脉冲序列化为固定
 SHA-256 `c7503b92224d157bd1ba05fa0b1c100a8ddca6c9ea679ec52a2dc517abcead02`，与 TypeScript oracle 一致。
+
+Cartridge/EasyFlash 验收证据（2026年08月11日）：Rust VICE revision 46176 Ocean CRT 的 4 个
+银行哈希、37 次 ROM PC 帧采样、活动计数 `$63` 与屏幕 SHA-256 均和 TypeScript oracle 一致；
+官方 EasyProg 1.6.3 在 109 帧进入 BASIC、264 帧内识别 AM29F040B 双芯片与 1 MiB 卡带，并由
+真实 6510 torture path 在 Rust 整机中改写 ROML 8,184 字节和 ROMH 1,679 字节。
 
 ## M2：Turbo 语义
 

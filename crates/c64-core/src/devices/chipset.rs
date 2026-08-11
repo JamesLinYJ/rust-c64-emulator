@@ -14,6 +14,7 @@ use crate::address_space::{C64BusDevices, CartridgeLines};
 use crate::architecture::VideoStandard;
 use crate::processor_port::{ProcessorPortInputState, ProcessorPortOutputState};
 
+use super::cartridge::{Cartridge, CartridgeError};
 use super::cia::{Mos6526, Mos6526Model, Mos6526Timing};
 use super::drive1541::drive::{Commodore1541Drive, Commodore1541DriveError};
 use super::iec::{IecBus, IecLine, IecPort};
@@ -36,6 +37,10 @@ const CIA2_NON_IEC_INPUTS_HIGH: u8 = 0x3f;
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum C64ChipsetError {
+    Cartridge(CartridgeError),
+    CartridgeAlreadyAttached,
+    CartridgeNotAttached,
+    EasyFlashNotAttached,
     Datasette(DatasetteError),
     Drive1541(Commodore1541DriveError),
     Drive1541AlreadyAttached,
@@ -46,6 +51,14 @@ pub enum C64ChipsetError {
 impl fmt::Display for C64ChipsetError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
+            Self::Cartridge(error) => error.fmt(formatter),
+            Self::CartridgeAlreadyAttached => {
+                formatter.write_str("a cartridge is already attached")
+            }
+            Self::CartridgeNotAttached => formatter.write_str("no cartridge is attached"),
+            Self::EasyFlashNotAttached => {
+                formatter.write_str("the attached cartridge is not an EasyFlash board")
+            }
             Self::Datasette(error) => error.fmt(formatter),
             Self::Drive1541(error) => error.fmt(formatter),
             Self::Drive1541AlreadyAttached => {
@@ -58,6 +71,12 @@ impl fmt::Display for C64ChipsetError {
 }
 
 impl std::error::Error for C64ChipsetError {}
+
+impl From<CartridgeError> for C64ChipsetError {
+    fn from(error: CartridgeError) -> Self {
+        Self::Cartridge(error)
+    }
+}
 
 impl From<DatasetteError> for C64ChipsetError {
     fn from(error: DatasetteError) -> Self {
@@ -92,7 +111,7 @@ pub struct C64Chipset {
     datasette: Commodore1530Datasette,
     pending_datasette_error: Option<DatasetteError>,
     tape_read_line_high: bool,
-    cartridge_lines: CartridgeLines,
+    cartridge: Option<Cartridge>,
     processor_port_output: ProcessorPortOutputState,
     last_cpu_read_was_held: bool,
 }
@@ -127,7 +146,7 @@ impl C64Chipset {
             ),
             pending_datasette_error: None,
             tape_read_line_high: true,
-            cartridge_lines: CartridgeLines::DISCONNECTED,
+            cartridge: None,
             processor_port_output: ProcessorPortOutputState {
                 direction: 0,
                 output_latch: 0,
@@ -153,12 +172,15 @@ impl C64Chipset {
         &mut self.nmi_cia
     }
 
-    pub const fn irq_asserted(&self) -> bool {
-        self.irq_cia.interrupt_pending() || self.vic.interrupt_pending()
+    pub fn irq_asserted(&self) -> bool {
+        self.irq_cia.interrupt_pending()
+            || self.vic.interrupt_pending()
+            || self.cartridge.as_ref().is_some_and(Cartridge::irq_line_low)
     }
 
-    pub const fn nmi_asserted(&self) -> bool {
+    pub fn nmi_asserted(&self) -> bool {
         self.nmi_cia.interrupt_pending()
+            || self.cartridge.as_ref().is_some_and(Cartridge::nmi_line_low)
     }
 
     pub const fn processor_port_output(&self) -> ProcessorPortOutputState {
@@ -203,6 +225,38 @@ impl C64Chipset {
 
     pub const fn datasette_mut(&mut self) -> &mut Commodore1530Datasette {
         &mut self.datasette
+    }
+
+    pub const fn cartridge(&self) -> Option<&Cartridge> {
+        self.cartridge.as_ref()
+    }
+
+    pub const fn cartridge_mut(&mut self) -> Option<&mut Cartridge> {
+        self.cartridge.as_mut()
+    }
+
+    /// Attach one fully validated cartridge to the expansion port.
+    ///
+    /// # Errors
+    ///
+    /// Rejects attachment while the physical slot is occupied.
+    pub fn attach_cartridge(&mut self, cartridge: Cartridge) -> Result<(), C64ChipsetError> {
+        if self.cartridge.is_some() {
+            return Err(C64ChipsetError::CartridgeAlreadyAttached);
+        }
+        self.cartridge = Some(cartridge);
+        Ok(())
+    }
+
+    /// Detach and return the current expansion-port cartridge.
+    ///
+    /// # Errors
+    ///
+    /// Rejects an empty physical slot.
+    pub fn detach_cartridge(&mut self) -> Result<Cartridge, C64ChipsetError> {
+        self.cartridge
+            .take()
+            .ok_or(C64ChipsetError::CartridgeNotAttached)
     }
 
     /// Attach one explicitly configured 1541 to this board's shared IEC bus.
@@ -262,6 +316,7 @@ impl C64Chipset {
         memory: &mut M,
     ) -> Result<(), C64ChipsetError> {
         let datasette_result = self.clock_datasette();
+        self.clock_cartridge();
         self.clock_cias();
         let vic_result = self.clock_vic(memory);
         self.clock_sid();
@@ -286,6 +341,12 @@ impl C64Chipset {
         self.irq_cia.clock_cycle();
         self.nmi_cia.clock_cycle();
         self.synchronize_light_pen_input();
+    }
+
+    pub(crate) fn clock_cartridge(&mut self) {
+        if let Some(cartridge) = self.cartridge.as_mut() {
+            cartridge.clock_cycles(1);
+        }
     }
 
     pub(crate) fn clock_vic<M: VicMemoryBus>(&mut self, memory: &mut M) -> Result<(), VicError> {
@@ -317,6 +378,9 @@ impl C64Chipset {
         self.nmi_cia.reset();
         self.vic.reset();
         self.sid.reset();
+        if let Some(cartridge) = self.cartridge.as_mut() {
+            cartridge.reset();
+        }
         let release_result = self.set_iec_reset_asserted(false);
         self.synchronize_light_pen_input();
         self.synchronize_cia1_flag_input();
@@ -336,7 +400,6 @@ impl C64Chipset {
         self.nmi_cia = fresh.nmi_cia;
         self.vic = fresh.vic;
         self.sid = fresh.sid;
-        self.cartridge_lines = fresh.cartridge_lines;
         self.processor_port_output = fresh.processor_port_output;
         self.pending_datasette_error = None;
         self.tape_read_line_high = true;
@@ -438,7 +501,30 @@ impl Default for C64Chipset {
 
 impl C64BusDevices for C64Chipset {
     fn cartridge_lines(&self) -> CartridgeLines {
-        self.cartridge_lines
+        self.cartridge
+            .as_ref()
+            .map_or(CartridgeLines::DISCONNECTED, Cartridge::lines)
+    }
+
+    fn read_cartridge(
+        &mut self,
+        region: crate::address_space::CartridgeRegion,
+        address: u16,
+    ) -> Option<u8> {
+        self.cartridge
+            .as_mut()
+            .and_then(|cartridge| cartridge.read(region, address))
+    }
+
+    fn write_cartridge(
+        &mut self,
+        region: crate::address_space::CartridgeRegion,
+        address: u16,
+        value: u8,
+    ) {
+        if let Some(cartridge) = self.cartridge.as_mut() {
+            cartridge.write(region, address, value);
+        }
     }
 
     fn read_io(&mut self, address: u16, open_bus: u8) -> u8 {

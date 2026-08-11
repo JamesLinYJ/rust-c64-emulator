@@ -8,6 +8,7 @@
 //   Author:     OpenAI Codex
 // --------------------------------------------------------------------------
 
+pub mod cartridge;
 mod chipset;
 pub mod cia;
 pub mod drive1541;

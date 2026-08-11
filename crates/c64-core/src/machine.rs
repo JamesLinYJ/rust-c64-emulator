@@ -20,6 +20,7 @@ use crate::{
     cpu::{Cpu6510, Cpu6510Error, Cpu6510State, CpuBus, CpuIrqLine, CpuNmiLine},
     devices::{
         C64Chipset, C64ChipsetError,
+        cartridge::{Cartridge, CartridgeKind},
         tape::{DatasetteError, DatasetteTape, DatasetteTransport},
         vic::VicError,
     },
@@ -140,6 +141,90 @@ impl C64Core {
 
     pub const fn devices(&self) -> &C64Chipset {
         &self.devices
+    }
+
+    /// Parse and attach one CRT cartridge at a system-cycle boundary.
+    ///
+    /// # Errors
+    ///
+    /// Rejects malformed media, unsupported boards, an occupied slot or an
+    /// internal CPU slot. Validation completes before the chipset is changed.
+    pub fn insert_crt(
+        &mut self,
+        bytes: &[u8],
+        easy_flash_jumper_installed: bool,
+    ) -> Result<(), CoreError> {
+        self.clock.advance_system_cycles(0)?;
+        let cartridge = Cartridge::from_crt_bytes(bytes, easy_flash_jumper_installed)
+            .map_err(C64ChipsetError::from)?;
+        self.devices.attach_cartridge(cartridge)?;
+        Ok(())
+    }
+
+    /// Detach and return the expansion-port cartridge at a cycle boundary.
+    ///
+    /// # Errors
+    ///
+    /// Rejects an empty slot or an internal CPU slot.
+    pub fn eject_cartridge(&mut self) -> Result<Cartridge, CoreError> {
+        self.clock.advance_system_cycles(0)?;
+        self.devices.detach_cartridge().map_err(Into::into)
+    }
+
+    pub const fn cartridge_attached(&self) -> bool {
+        self.devices.cartridge().is_some()
+    }
+
+    pub fn cartridge_kind(&self) -> Option<CartridgeKind> {
+        self.devices.cartridge().map(Cartridge::kind)
+    }
+
+    /// Borrow the attached `EasyFlash` board at a system-cycle boundary.
+    ///
+    /// # Errors
+    ///
+    /// Rejects an internal CPU slot, an empty slot or another cartridge type.
+    pub fn easyflash_mut(
+        &mut self,
+    ) -> Result<&mut crate::devices::cartridge::EasyFlashCartridge, CoreError> {
+        self.clock.advance_system_cycles(0)?;
+        self.devices
+            .cartridge_mut()
+            .and_then(Cartridge::easyflash_mut)
+            .ok_or(C64ChipsetError::EasyFlashNotAttached.into())
+    }
+
+    pub fn easyflash_dirty(&self) -> Option<bool> {
+        self.devices
+            .cartridge()
+            .and_then(Cartridge::easyflash)
+            .map(|cartridge| cartridge.flash_low().dirty() || cartridge.flash_high().dirty())
+    }
+
+    /// Copy the physical `EasyFlash` ROML chip for persistence.
+    ///
+    /// # Errors
+    ///
+    /// Requires an `EasyFlash` cartridge.
+    pub fn export_easyflash_low(&self) -> Result<Vec<u8>, CoreError> {
+        self.devices
+            .cartridge()
+            .and_then(Cartridge::easyflash)
+            .map(|cartridge| cartridge.flash_low().to_bytes())
+            .ok_or(C64ChipsetError::EasyFlashNotAttached.into())
+    }
+
+    /// Copy the physical `EasyFlash` ROMH chip for persistence.
+    ///
+    /// # Errors
+    ///
+    /// Requires an `EasyFlash` cartridge.
+    pub fn export_easyflash_high(&self) -> Result<Vec<u8>, CoreError> {
+        self.devices
+            .cartridge()
+            .and_then(Cartridge::easyflash)
+            .map(|cartridge| cartridge.flash_high().to_bytes())
+            .ok_or(C64ChipsetError::EasyFlashNotAttached.into())
     }
 
     /// Attach one explicitly configured 1541 at a system-cycle boundary.
@@ -640,6 +725,7 @@ impl<'a> ClockedCpuBus<'a> {
         }
         self.address_space
             .synchronize_processor_port_inputs(self.devices.processor_port_input_state());
+        self.devices.clock_cartridge();
         self.devices.clock_cias();
         if let Some(address) = cpu_read_address {
             self.address_space
