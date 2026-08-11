@@ -107,11 +107,21 @@ Vite bundle 的缺口，远端 [CI run 31496827909](https://github.com/JamesLinY
 ## M4：平台运行时
 
 - [x] 将 Wasm VM 放入 module Worker。
-- [ ] 定义 run/pause/reset/media/input/state/diagnostics 命令协议。
+- [x] 定义 run/pause/reset/media/input/state/diagnostics 命令协议。
 - [x] 实现可回收 Transferable 帧/PCM 缓冲；SAB 与 simd128 仅作可选优化。
-- [ ] Chrome/Edge、Firefox、WebKit、Node 使用同一 Rust 核心。
+- [x] Chrome/Edge、Firefox、WebKit、Node 使用同一 Rust 核心。
 
 验收：PAL 50 Hz、NTSC 60 Hz 稳定，UI 不阻塞，参考机器无音频 underrun。
+
+平台协议与跨浏览器语义验收证据（2026年08月11日）：提交 `c298841` 通过版本化粗粒度请求完成
+run/pause/reset、输入、完整 save/load state、diagnostics、Tape、Cartridge/EasyFlash、REU 及 1541
+D64/G64 媒体控制，Transferable 所有权和 64 位计数器 high/low 边界均有测试；提交 `9d4f141`
+让确切 Sites 生产产物在 Google Chrome、Microsoft Edge、Mozilla Firefox 和 WebKit 中分别完成
+module Worker/Wasm 启动、PAL 帧推进、暂停/单帧/恢复及 BASIC PRG 执行，Node 使用同一
+`c64-core` 生成物。远端 [CI run 31507556499](https://github.com/JamesLinYJ/rust-c64-emulator/actions/runs/31507556499)
+的五个 job 全部成功；Chrome、Edge、WebKit 为 50 host FPS，Firefox 为 12 host FPS。因此本项只
+关闭“同一 Rust 核心”语义兼容，M4 总验收仍需真实 NTSC 60 Hz、Firefox 实时性能和零音频
+underrun，不得据此宣称平台运行时整体完成。
 
 ## M5：SuperCPU
 
