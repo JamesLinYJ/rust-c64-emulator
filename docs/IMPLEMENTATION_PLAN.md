@@ -99,8 +99,9 @@ Vite bundle 的缺口，远端 [CI run 31496827909](https://github.com/JamesLinY
 档位上连续执行 4,096 个纯 RAM CPU 槽位，并与 Strict 的 CPU 状态、RAM 写入和总线事务逐项一致；
 虚拟时钟现能给出不得越过的下一外设事件边界。`CodePageGuard` 同时校验物理页能力、页代码
 generation 和全局映射 generation，CPU、REU、Enhanced DMA、Host 写入共用同一失效路径。
-Turbo CPU 访问已通过强顺序 `BusBridge` 报告处理器端口映射变化、REU 即时 DMA 和 `$FF00`
-延迟触发，Strict 继续走无额外桥接 trace 的原周期精确热路径。非 CPU 总线主控的统一桥接、block
+Turbo CPU 与 REU DMA 访问已通过强顺序 `BusBridge`：处理器端口映射变化、REU 即时 DMA、
+`$FF00` 延迟触发及 REU 写入代码页失效均有根因测试，IO2 被 PLA 屏蔽时也不会误判为 REU。
+Strict CPU 继续走无额外桥接 trace 的原周期精确热路径。VIC/Enhanced DMA 主控的统一桥接、block
 执行器精确退出和本节其余验收尚未完成，因此 M2 不标记完成。
 
 ## M3：Turbo 执行引擎
