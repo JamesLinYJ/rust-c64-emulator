@@ -13,3 +13,4 @@ pub mod disk_via;
 pub mod gcr;
 pub mod iec_via;
 pub mod mechanism;
+pub mod memory;
