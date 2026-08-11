@@ -101,6 +101,9 @@ jobs:
       - name: Run Rust EasyFlash official reference gate
         run: npm run verify:easyflash:rust
 
+      - name: Run Rust REU VICE reference gate
+        run: npm run verify:reu:rust
+
       - name: Install pinned wasm-pack
         run: cargo install wasm-pack --version 0.15.0 --locked
 

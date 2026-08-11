@@ -13,6 +13,7 @@ mod chipset;
 pub mod cia;
 pub mod drive1541;
 pub mod iec;
+pub mod reu;
 pub mod sid;
 pub mod tape;
 pub mod via;

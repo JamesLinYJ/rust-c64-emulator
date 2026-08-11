@@ -16,6 +16,7 @@
     allow(linker_messages)
 )]
 
+use c64_core::devices::reu::{RamExpansionUnit, ReuSize};
 use c64_core::media::tap::TapVideoStandard;
 use c64_core::{
     C64Core, CoreConfig, CoreError, MachineProfile, MemoryWriteSource, PacingMode, SidModel,
@@ -218,6 +219,63 @@ impl C64Vm {
     /// Requires an attached `EasyFlash` board.
     pub fn export_easyflash_high(&self) -> Result<Vec<u8>, JsError> {
         self.core.export_easyflash_high().map_err(to_js_error)
+    }
+
+    /// Attach an empty classic 128, 256 or 512 KiB 17xx REU.
+    ///
+    /// # Errors
+    ///
+    /// Rejects unsupported sizes, an occupied expansion port or an internal
+    /// CPU slot.
+    pub fn attach_reu(&mut self, size_kib: u16) -> Result<(), JsError> {
+        let size = ReuSize::from_kibibytes(size_kib)
+            .ok_or_else(|| JsError::new("REU size must be 128, 256 or 512 KiB"))?;
+        self.core.attach_reu(size).map_err(to_js_error)
+    }
+
+    /// Attach a classic REU and initialize all of its physical DRAM in one call.
+    ///
+    /// # Errors
+    ///
+    /// Rejects unsupported sizes, a mismatched image, an occupied expansion
+    /// port or an internal CPU slot.
+    pub fn attach_reu_image(&mut self, size_kib: u16, image: &[u8]) -> Result<(), JsError> {
+        let size = ReuSize::from_kibibytes(size_kib)
+            .ok_or_else(|| JsError::new("REU size must be 128, 256 or 512 KiB"))?;
+        self.core.attach_reu_image(size, image).map_err(to_js_error)
+    }
+
+    /// Detach the REU and return its complete physical DRAM image.
+    ///
+    /// # Errors
+    ///
+    /// Requires an attached REU and a system-cycle boundary.
+    pub fn detach_reu(&mut self) -> Result<Vec<u8>, JsError> {
+        self.core
+            .detach_reu()
+            .map(|reu| reu.ram().to_vec())
+            .map_err(to_js_error)
+    }
+
+    pub fn reu_attached(&self) -> bool {
+        self.core.reu().is_some()
+    }
+
+    pub fn reu_size_kib(&self) -> u16 {
+        self.core.reu().map_or(0, |reu| reu.size().kibibytes())
+    }
+
+    pub fn reu_dma_active(&self) -> bool {
+        self.core.reu().is_some_and(RamExpansionUnit::dma_active)
+    }
+
+    /// Copy the complete physical REU DRAM in one coarse persistence call.
+    ///
+    /// # Errors
+    ///
+    /// Requires an attached REU.
+    pub fn export_reu_ram(&self) -> Result<Vec<u8>, JsError> {
+        self.core.export_reu_ram().map_err(to_js_error)
     }
 
     /// Parse and insert a read-only TAP image. A zero legacy duration means

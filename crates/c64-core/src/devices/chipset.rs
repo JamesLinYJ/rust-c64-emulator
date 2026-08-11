@@ -18,6 +18,7 @@ use super::cartridge::{Cartridge, CartridgeError};
 use super::cia::{Mos6526, Mos6526Model, Mos6526Timing};
 use super::drive1541::drive::{Commodore1541Drive, Commodore1541DriveError};
 use super::iec::{IecBus, IecLine, IecPort};
+use super::reu::{RamExpansionUnit, ReuImageError};
 use super::sid::{
     DEFAULT_SAMPLE_RATE_HZ, NTSC_PROCESSOR_CLOCK_HZ, PAL_PROCESSOR_CLOCK_HZ, Sid, SidModel,
 };
@@ -41,6 +42,9 @@ pub enum C64ChipsetError {
     CartridgeAlreadyAttached,
     CartridgeNotAttached,
     EasyFlashNotAttached,
+    ReuImage(ReuImageError),
+    ReuAlreadyAttached,
+    ReuNotAttached,
     Datasette(DatasetteError),
     Drive1541(Commodore1541DriveError),
     Drive1541AlreadyAttached,
@@ -59,6 +63,11 @@ impl fmt::Display for C64ChipsetError {
             Self::EasyFlashNotAttached => {
                 formatter.write_str("the attached cartridge is not an EasyFlash board")
             }
+            Self::ReuImage(error) => error.fmt(formatter),
+            Self::ReuAlreadyAttached => {
+                formatter.write_str("the expansion port is already occupied")
+            }
+            Self::ReuNotAttached => formatter.write_str("no REU is attached"),
             Self::Datasette(error) => error.fmt(formatter),
             Self::Drive1541(error) => error.fmt(formatter),
             Self::Drive1541AlreadyAttached => {
@@ -81,6 +90,12 @@ impl From<CartridgeError> for C64ChipsetError {
 impl From<DatasetteError> for C64ChipsetError {
     fn from(error: DatasetteError) -> Self {
         Self::Datasette(error)
+    }
+}
+
+impl From<ReuImageError> for C64ChipsetError {
+    fn from(error: ReuImageError) -> Self {
+        Self::ReuImage(error)
     }
 }
 
@@ -112,6 +127,7 @@ pub struct C64Chipset {
     pending_datasette_error: Option<DatasetteError>,
     tape_read_line_high: bool,
     cartridge: Option<Cartridge>,
+    reu: Option<RamExpansionUnit>,
     processor_port_output: ProcessorPortOutputState,
     last_cpu_read_was_held: bool,
 }
@@ -147,6 +163,7 @@ impl C64Chipset {
             pending_datasette_error: None,
             tape_read_line_high: true,
             cartridge: None,
+            reu: None,
             processor_port_output: ProcessorPortOutputState {
                 direction: 0,
                 output_latch: 0,
@@ -176,6 +193,10 @@ impl C64Chipset {
         self.irq_cia.interrupt_pending()
             || self.vic.interrupt_pending()
             || self.cartridge.as_ref().is_some_and(Cartridge::irq_line_low)
+            || self
+                .reu
+                .as_ref()
+                .is_some_and(RamExpansionUnit::irq_line_low)
     }
 
     pub fn nmi_asserted(&self) -> bool {
@@ -235,13 +256,21 @@ impl C64Chipset {
         self.cartridge.as_mut()
     }
 
+    pub const fn reu(&self) -> Option<&RamExpansionUnit> {
+        self.reu.as_ref()
+    }
+
+    pub const fn reu_mut(&mut self) -> Option<&mut RamExpansionUnit> {
+        self.reu.as_mut()
+    }
+
     /// Attach one fully validated cartridge to the expansion port.
     ///
     /// # Errors
     ///
     /// Rejects attachment while the physical slot is occupied.
     pub fn attach_cartridge(&mut self, cartridge: Cartridge) -> Result<(), C64ChipsetError> {
-        if self.cartridge.is_some() {
+        if self.cartridge.is_some() || self.reu.is_some() {
             return Err(C64ChipsetError::CartridgeAlreadyAttached);
         }
         self.cartridge = Some(cartridge);
@@ -257,6 +286,28 @@ impl C64Chipset {
         self.cartridge
             .take()
             .ok_or(C64ChipsetError::CartridgeNotAttached)
+    }
+
+    /// Attach one 17xx REU to the physical expansion port.
+    ///
+    /// # Errors
+    ///
+    /// Rejects attachment while the expansion port is occupied.
+    pub fn attach_reu(&mut self, reu: RamExpansionUnit) -> Result<(), C64ChipsetError> {
+        if self.reu.is_some() || self.cartridge.is_some() {
+            return Err(C64ChipsetError::ReuAlreadyAttached);
+        }
+        self.reu = Some(reu);
+        Ok(())
+    }
+
+    /// Detach and return the current 17xx REU.
+    ///
+    /// # Errors
+    ///
+    /// Rejects an expansion port without a REU.
+    pub fn detach_reu(&mut self) -> Result<RamExpansionUnit, C64ChipsetError> {
+        self.reu.take().ok_or(C64ChipsetError::ReuNotAttached)
     }
 
     /// Attach one explicitly configured 1541 to this board's shared IEC bus.
@@ -380,6 +431,9 @@ impl C64Chipset {
         self.sid.reset();
         if let Some(cartridge) = self.cartridge.as_mut() {
             cartridge.reset();
+        }
+        if let Some(reu) = self.reu.as_mut() {
+            reu.reset();
         }
         let release_result = self.set_iec_reset_asserted(false);
         self.synchronize_light_pen_input();
@@ -511,6 +565,11 @@ impl C64BusDevices for C64Chipset {
         region: crate::address_space::CartridgeRegion,
         address: u16,
     ) -> Option<u8> {
+        if region == crate::address_space::CartridgeRegion::Io2
+            && let Some(reu) = self.reu.as_mut()
+        {
+            return reu.read_io2(address);
+        }
         self.cartridge
             .as_mut()
             .and_then(|cartridge| cartridge.read(region, address))
@@ -522,6 +581,12 @@ impl C64BusDevices for C64Chipset {
         address: u16,
         value: u8,
     ) {
+        if region == crate::address_space::CartridgeRegion::Io2
+            && let Some(reu) = self.reu.as_mut()
+        {
+            reu.write_io2(address, value);
+            return;
+        }
         if let Some(cartridge) = self.cartridge.as_mut() {
             cartridge.write(region, address, value);
         }
@@ -578,6 +643,12 @@ impl C64BusDevices for C64Chipset {
             .set_host_signals(Self::datasette_host_signals(state))
         {
             self.pending_datasette_error.get_or_insert(error);
+        }
+    }
+
+    fn observe_cpu_write(&mut self, address: u16) {
+        if let Some(reu) = self.reu.as_mut() {
+            reu.observe_cpu_write(address);
         }
     }
 }

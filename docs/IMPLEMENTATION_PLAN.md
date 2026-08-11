@@ -45,7 +45,7 @@ Cartridge 与程序语料无差异。参考资产下载采用哈希校验、有�
 - [ ] 完成 1541 整机迁移；Rust 整机与目录/LOAD/SAVE/format 阶段门禁已通过，完整 VICE `verify:drive` 集合仍待迁移验收。
 - [x] 迁移 Datasette、TAP/Writable TAP、6510 motor/write/sense/read 接线与粗粒度 Wasm 媒体 ABI。
 - [x] 迁移 CRT、普通 8K/16K/Ultimax、Ocean、Magic Desk、EasyFlash 与 AM29F040B 状态机。
-- [ ] 迁移 REU。
+- [x] 迁移 REU。
 - [ ] 把版本化架构状态扩展到全部芯片/外设；现有 trace 和 TypeScript/Rust 差分适配器继续补齐。
 - [ ] 所有参考测试一致后切换生产 Strict；TypeScript 核心转为测试 oracle。
 
@@ -60,6 +60,11 @@ Cartridge/EasyFlash 验收证据（2026年08月11日）：Rust VICE revision 461
 银行哈希、37 次 ROM PC 帧采样、活动计数 `$63` 与屏幕 SHA-256 均和 TypeScript oracle 一致；
 官方 EasyProg 1.6.3 在 109 帧进入 BASIC、264 帧内识别 AM29F040B 双芯片与 1 MiB 卡带，并由
 真实 6510 torture path 在 Rust 整机中改写 ROML 8,184 字节和 ROMH 1,679 字节。
+
+REU 验收证据（2026年08月11日）：Rust 整机通过固定 SHA-256 的 VICE revision 46176
+QuickReu 1.1.1 全部 8 个功能 PRG，均报告零失败类别；每个程序完成 44,588 个 DMA 总线周期，
+并覆盖 copy/fetch/swap/verify、autoload、IRQ、`$FF00` 触发、经典 REU 尺寸与镜像、
+VIC 优先停顿、隐藏 RAM/页 generation、扩展槽互斥和粗粒度 Wasm 持久化 ABI。
 
 ## M2：Turbo 语义
 

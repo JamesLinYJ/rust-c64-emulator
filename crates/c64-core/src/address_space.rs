@@ -86,6 +86,8 @@ pub trait C64BusDevices {
     }
 
     fn processor_port_output_changed(&mut self, _state: ProcessorPortOutputState) {}
+
+    fn observe_cpu_write(&mut self, _address: u16) {}
 }
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
@@ -289,6 +291,22 @@ impl C64AddressSpace {
         C64CpuBus {
             address_space: self,
             devices,
+            write_source: MemoryWriteSource::Cpu,
+            processor_port_visible: true,
+            observe_cpu_writes: true,
+        }
+    }
+
+    pub(crate) fn reu_dma_bus<'a, D: C64BusDevices>(
+        &'a mut self,
+        devices: &'a mut D,
+    ) -> C64CpuBus<'a, D> {
+        C64CpuBus {
+            address_space: self,
+            devices,
+            write_source: MemoryWriteSource::Reu,
+            processor_port_visible: false,
+            observe_cpu_writes: false,
         }
     }
 
@@ -352,6 +370,9 @@ impl VicMemoryBus for C64VicMemoryBus<'_> {
 pub struct C64CpuBus<'a, D: C64BusDevices> {
     address_space: &'a mut C64AddressSpace,
     devices: &'a mut D,
+    write_source: MemoryWriteSource,
+    processor_port_visible: bool,
+    observe_cpu_writes: bool,
 }
 
 impl<D: C64BusDevices> C64CpuBus<'_, D> {
@@ -388,7 +409,7 @@ impl<D: C64BusDevices> C64CpuBus<'_, D> {
             | PlaTarget::CharacterRom => {
                 self.address_space
                     .memory
-                    .write_base_ram(address, value, MemoryWriteSource::Cpu);
+                    .write_base_ram(address, value, self.write_source);
             }
             PlaTarget::Io => self.write_io(address, value),
             PlaTarget::CartridgeLow => {
@@ -441,7 +462,9 @@ impl<D: C64BusDevices> CpuBus for C64CpuBus<'_, D> {
     fn read(&mut self, address: u16) -> u8 {
         self.address_space
             .synchronize_processor_port_inputs(self.devices.processor_port_input_state());
-        let value = if address == 0x0000 {
+        let value = if !self.processor_port_visible && address <= 0x0001 {
+            self.address_space.memory.read_base_ram(address)
+        } else if address == 0x0000 {
             self.address_space.processor_port.direction_register()
         } else if address == 0x0001 {
             self.address_space.processor_port.data_register()
@@ -456,7 +479,11 @@ impl<D: C64BusDevices> CpuBus for C64CpuBus<'_, D> {
 
     fn write(&mut self, address: u16, value: u8) {
         self.address_space.cpu_data_bus_latch = value;
-        if address == 0x0000 || address == 0x0001 {
+        if !self.processor_port_visible && address <= 0x0001 {
+            self.address_space
+                .memory
+                .write_base_ram(address, value, self.write_source);
+        } else if address == 0x0000 || address == 0x0001 {
             let output_changed = if address == 0x0000 {
                 self.address_space.processor_port.write_direction(value)
             } else {
@@ -464,7 +491,7 @@ impl<D: C64BusDevices> CpuBus for C64CpuBus<'_, D> {
             };
             self.address_space
                 .memory
-                .write_base_ram(address, value, MemoryWriteSource::Cpu);
+                .write_base_ram(address, value, self.write_source);
             self.address_space
                 .synchronize_pla(self.devices.cartridge_lines());
             if output_changed {
@@ -472,12 +499,14 @@ impl<D: C64BusDevices> CpuBus for C64CpuBus<'_, D> {
                     self.address_space.processor_port.output_state(),
                 );
             }
-            return;
+        } else {
+            self.address_space
+                .synchronize_pla(self.devices.cartridge_lines());
+            self.write_pla_target(self.address_space.pla.write_target(address), address, value);
         }
-
-        self.address_space
-            .synchronize_pla(self.devices.cartridge_lines());
-        self.write_pla_target(self.address_space.pla.write_target(address), address, value);
+        if self.observe_cpu_writes {
+            self.devices.observe_cpu_write(address);
+        }
     }
 
     fn read_was_held(&self) -> bool {

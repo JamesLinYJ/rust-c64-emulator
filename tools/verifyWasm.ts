@@ -13,6 +13,8 @@ import { createRequire } from 'node:module';
 import path from 'node:path';
 
 interface C64VmInstance {
+  attach_reu(sizeKib: number): void;
+  attach_reu_image(sizeKib: number, image: Uint8Array): void;
   awaiting_auto_calibration(): boolean;
   cartridge_attached(): boolean;
   cartridge_kind(): number;
@@ -20,11 +22,13 @@ interface C64VmInstance {
   effective_slots_per_system_cycle(): number;
   easyflash_dirty(): boolean;
   eject_cartridge(): void;
+  detach_reu(): Uint8Array;
   eject_tap(): Uint8Array;
   elapsed_system_cycles_high(): number;
   elapsed_system_cycles_low(): number;
   export_easyflash_high(): Uint8Array;
   export_easyflash_low(): Uint8Array;
+  export_reu_ram(): Uint8Array;
   free(): void;
   load_state(bytes: Uint8Array): void;
   lock_auto_turbo(resolvedSlotsPerSystemCycle: number): void;
@@ -34,6 +38,9 @@ interface C64VmInstance {
   insert_tap(bytes: Uint8Array, legacyV0OverflowPulseCycles: number): void;
   read_base_ram(address: number): number;
   request_auto_turbo(maximumSlotsPerSystemCycle: number): void;
+  reu_attached(): boolean;
+  reu_dma_active(): boolean;
+  reu_size_kib(): number;
   reset(): void;
   run_cpu_slots(slots: number): number;
   save_state(): Uint8Array;
@@ -106,6 +113,29 @@ try {
   assert.equal(flashHigh[flashHigh.length - 1], 0xff);
   source.eject_cartridge();
 
+  assert.throws(() => source.attach_reu(64), /128, 256 or 512/u);
+  source.attach_reu(512);
+  assert.equal(source.reu_attached(), true);
+  assert.equal(source.reu_size_kib(), 512);
+  assert.equal(source.reu_dma_active(), false);
+  const blankReu = source.export_reu_ram();
+  assert.equal(blankReu.length, 512 * 1024);
+  assert.equal(blankReu[0], 0xff);
+  assert.throws(() => source.insert_crt(standardCrt, false), /already attached/u);
+  assert.deepEqual(source.detach_reu(), blankReu);
+  assert.equal(source.reu_attached(), false);
+  assert.throws(() => source.detach_reu(), /no REU/u);
+
+  const initializedReu = new Uint8Array(256 * 1024);
+  initializedReu[0] = 0x12;
+  initializedReu[initializedReu.length - 1] = 0x34;
+  assert.throws(
+    () => source.attach_reu_image(256, initializedReu.subarray(1)),
+    /exactly 262144 bytes/u,
+  );
+  source.attach_reu_image(256, initializedReu);
+  assert.deepEqual(source.detach_reu(), initializedReu);
+
   assert.throws(() => source.insert_tap(Uint8Array.of(0), 0), /20-byte header/u);
   assert.equal(source.tape_mounted(), false, '失败的 TAP 插入必须保持空仓');
   const readOnlyTap = createTap(Uint8Array.of(2, 3));
@@ -162,7 +192,7 @@ try {
 }
 
 console.log(
-  'Wasm ABI 安全验证通过：边界输入、状态原子性、Cartridge/EasyFlash、Tape、Turbo 与 64 KiB RAM 均符合契约。',
+  'Wasm ABI 安全验证通过：边界输入、状态原子性、Cartridge/EasyFlash、REU、Tape、Turbo 与 64 KiB RAM 均符合契约。',
 );
 
 function assertC64WasmModule(value: unknown): asserts value is C64WasmModule {

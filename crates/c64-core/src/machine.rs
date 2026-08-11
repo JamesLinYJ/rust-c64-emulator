@@ -21,6 +21,7 @@ use crate::{
     devices::{
         C64Chipset, C64ChipsetError,
         cartridge::{Cartridge, CartridgeKind},
+        reu::{RamExpansionUnit, ReuDmaOperation, ReuSize},
         tape::{DatasetteError, DatasetteTape, DatasetteTransport},
         vic::VicError,
     },
@@ -49,6 +50,9 @@ pub struct CoreDiagnostics {
     pub retired_cpu_slots: u64,
     pub elapsed_system_cycles: u64,
     pub held_cpu_read_system_cycles: u64,
+    pub reu_dma_system_cycles: u64,
+    pub reu_dma_vic_stall_cycles: u64,
+    pub reu_dma_bus_cycles: u64,
     pub cpu_bus_transactions: u64,
     pub last_cpu_bus_transaction: Option<CpuBusTransaction>,
     pub execution_mode_changes: u64,
@@ -199,6 +203,68 @@ impl C64Core {
             .cartridge()
             .and_then(Cartridge::easyflash)
             .map(|cartridge| cartridge.flash_low().dirty() || cartridge.flash_high().dirty())
+    }
+
+    /// Attach a blank classic 17xx REU at a system-cycle boundary.
+    ///
+    /// # Errors
+    ///
+    /// Rejects an occupied expansion port or an internal CPU slot.
+    pub fn attach_reu(&mut self, size: ReuSize) -> Result<(), CoreError> {
+        self.clock.advance_system_cycles(0)?;
+        self.devices.attach_reu(RamExpansionUnit::new(size))?;
+        Ok(())
+    }
+
+    /// Attach a classic 17xx REU initialized from a physical DRAM image.
+    ///
+    /// # Errors
+    ///
+    /// Rejects an image of the wrong size, an occupied expansion port or an
+    /// internal CPU slot.
+    pub fn attach_reu_image(&mut self, size: ReuSize, image: &[u8]) -> Result<(), CoreError> {
+        self.clock.advance_system_cycles(0)?;
+        let reu = RamExpansionUnit::from_image(size, image).map_err(C64ChipsetError::from)?;
+        self.devices.attach_reu(reu)?;
+        Ok(())
+    }
+
+    /// Detach and return the physical REU at a system-cycle boundary.
+    ///
+    /// # Errors
+    ///
+    /// Rejects an empty expansion port or an internal CPU slot.
+    pub fn detach_reu(&mut self) -> Result<RamExpansionUnit, CoreError> {
+        self.clock.advance_system_cycles(0)?;
+        self.devices.detach_reu().map_err(Into::into)
+    }
+
+    pub const fn reu(&self) -> Option<&RamExpansionUnit> {
+        self.devices.reu()
+    }
+
+    /// Mutably borrow the attached REU at a system-cycle boundary.
+    ///
+    /// # Errors
+    ///
+    /// Rejects an empty expansion port or an internal CPU slot.
+    pub fn reu_mut(&mut self) -> Result<&mut RamExpansionUnit, CoreError> {
+        self.clock.advance_system_cycles(0)?;
+        self.devices
+            .reu_mut()
+            .ok_or(C64ChipsetError::ReuNotAttached.into())
+    }
+
+    /// Copy the complete physical REU DRAM in one persistence operation.
+    ///
+    /// # Errors
+    ///
+    /// Requires an attached REU.
+    pub fn export_reu_ram(&self) -> Result<Vec<u8>, CoreError> {
+        self.devices
+            .reu()
+            .map(|reu| reu.ram().to_vec())
+            .ok_or(C64ChipsetError::ReuNotAttached.into())
     }
 
     /// Copy the physical `EasyFlash` ROML chip for persistence.
@@ -557,6 +623,7 @@ impl C64Core {
     pub fn run_cpu_slots(&mut self, slots: u64) -> Result<u64, CoreError> {
         let mut elapsed_cycles = 0;
         for _ in 0..slots {
+            elapsed_cycles += self.service_reu_dma()?;
             self.service_pending_interrupt();
             self.service_nmi_vector_takeover();
             let (completed_system_cycle, hardware_error) = {
@@ -580,6 +647,75 @@ impl C64Core {
             if completed_system_cycle {
                 elapsed_cycles += 1;
             }
+        }
+        Ok(elapsed_cycles)
+    }
+
+    fn service_reu_dma(&mut self) -> Result<u64, CoreError> {
+        let mut elapsed_cycles = 0;
+        while self.devices.reu().is_some_and(RamExpansionUnit::dma_active) {
+            let hardware_error = {
+                let mut bus = ClockedCpuBus::new(
+                    &mut self.address_space,
+                    &mut self.devices,
+                    &mut self.clock,
+                    &mut self.irq_line,
+                    &mut self.nmi_line,
+                    &mut self.diagnostics,
+                );
+                bus.clock_hardware_cycle(None);
+                bus.take_hardware_error()
+            };
+            if let Some(error) = hardware_error {
+                return Err(error.into());
+            }
+
+            if self.devices.aec_low() {
+                self.diagnostics.reu_dma_vic_stall_cycles =
+                    self.diagnostics.reu_dma_vic_stall_cycles.wrapping_add(1);
+            } else {
+                let operation = self
+                    .devices
+                    .reu()
+                    .and_then(RamExpansionUnit::dma_operation)
+                    .expect("an active REU must publish one DMA operation");
+                let c64_value = match operation {
+                    ReuDmaOperation::ReadC64 { address } => {
+                        let value = self
+                            .address_space
+                            .reu_dma_bus(&mut self.devices)
+                            .read(address);
+                        self.diagnostics.reu_dma_bus_cycles =
+                            self.diagnostics.reu_dma_bus_cycles.wrapping_add(1);
+                        Some(value)
+                    }
+                    ReuDmaOperation::WriteC64 { address, value } => {
+                        self.address_space
+                            .reu_dma_bus(&mut self.devices)
+                            .write(address, value);
+                        self.diagnostics.reu_dma_bus_cycles =
+                            self.diagnostics.reu_dma_bus_cycles.wrapping_add(1);
+                        None
+                    }
+                    ReuDmaOperation::Idle => None,
+                };
+                self.devices
+                    .reu_mut()
+                    .expect("the active REU cannot detach during DMA")
+                    .complete_dma_bus_cycle(c64_value);
+            }
+
+            self.clock.advance_external_wait_cycle();
+            self.diagnostics.elapsed_system_cycles =
+                self.diagnostics.elapsed_system_cycles.wrapping_add(1);
+            self.diagnostics.reu_dma_system_cycles =
+                self.diagnostics.reu_dma_system_cycles.wrapping_add(1);
+            elapsed_cycles += 1;
+            let sampled_cycle = self.clock.timestamp().system_cycle;
+            self.irq_line
+                .update(self.devices.irq_asserted(), sampled_cycle);
+            self.nmi_line
+                .update(self.devices.nmi_asserted(), sampled_cycle);
         }
         Ok(elapsed_cycles)
     }
