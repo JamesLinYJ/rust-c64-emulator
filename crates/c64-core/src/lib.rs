@@ -47,10 +47,13 @@ pub use devices::sid::{
 pub use devices::via::{Mos6522, Mos6522ControlLine, Mos6522ShiftMode};
 pub use devices::vic::{VicCycleResult, VicCycleSequencer, VicCycleSignals};
 pub use devices::{C64Chipset, C64ChipsetError};
-pub use machine::{C64Core, CoreDiagnostics, CoreError, CpuBusAccessKind, CpuBusTransaction};
+pub use machine::{
+    BusBridgeTransaction, C64Core, CoreDiagnostics, CoreError, CpuBusAccessKind, CpuBusTransaction,
+};
 pub use media::prg::{LoadedPrg, PrgError};
 pub use memory::{
-    BASE_RAM_BYTES, CoherentMemory, MemoryWriteSource, PageDescriptor, PageDomain, PhysicalTarget,
+    BASE_RAM_BYTES, CodePageGuard, CoherentMemory, MemoryWriteSource, PageDescriptor, PageDomain,
+    PhysicalTarget,
 };
 pub use pla::{C64Pla, CartridgeMode, PlaInputs, PlaTarget};
 pub use processor_port::{ProcessorPort6510, ProcessorPortInputState, ProcessorPortOutputState};

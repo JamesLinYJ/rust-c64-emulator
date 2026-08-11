@@ -16,6 +16,7 @@ use crate::{
         CoreConfig, ExecutionConfigError, ExecutionController, ExecutionRequest, ExecutionStatus,
         MachineProfile, SlotsPerSystemCycle, TurboSpeedRequest,
     },
+    bus::{BusAccessKind, BusBridge, BusMaster, BusRequest, BusResponse},
     clock::{VirtualClock, VirtualClockError, VirtualTimestamp},
     cpu::{Cpu6510, Cpu6510Error, Cpu6510State, CpuBus, CpuIrqLine, CpuNmiLine},
     devices::{
@@ -34,7 +35,7 @@ use crate::{
         },
         tap::{TapImage, TapImageError, TapVideoStandard, WritableTapImage},
     },
-    memory::{CoherentMemory, MemoryWriteSource},
+    memory::{CoherentMemory, MemoryWriteSource, PageDescriptor, PageDomain, PhysicalTarget},
     state::{self, DecodedState, StateError},
 };
 
@@ -53,6 +54,13 @@ pub struct CpuBusTransaction {
     pub read_was_held: bool,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct BusBridgeTransaction {
+    pub request: BusRequest,
+    pub domain: PageDomain,
+    pub response: BusResponse,
+}
+
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub struct CoreDiagnostics {
     pub retired_cpu_slots: u64,
@@ -63,6 +71,7 @@ pub struct CoreDiagnostics {
     pub reu_dma_bus_cycles: u64,
     pub cpu_bus_transactions: u64,
     pub last_cpu_bus_transaction: Option<CpuBusTransaction>,
+    pub last_bus_bridge_transaction: Option<BusBridgeTransaction>,
     pub execution_mode_changes: u64,
     pub state_loads: u64,
 }
@@ -71,6 +80,10 @@ impl CoreDiagnostics {
     fn record_cpu_bus_transaction(&mut self, transaction: CpuBusTransaction) {
         self.cpu_bus_transactions = self.cpu_bus_transactions.wrapping_add(1);
         self.last_cpu_bus_transaction = Some(transaction);
+    }
+
+    fn record_bus_bridge_transaction(&mut self, transaction: BusBridgeTransaction) {
+        self.last_bus_bridge_transaction = Some(transaction);
     }
 
     fn merge_runtime(&mut self, delta: Self) {
@@ -95,6 +108,9 @@ impl CoreDiagnostics {
             .wrapping_add(delta.cpu_bus_transactions);
         if delta.last_cpu_bus_transaction.is_some() {
             self.last_cpu_bus_transaction = delta.last_cpu_bus_transaction;
+        }
+        if delta.last_bus_bridge_transaction.is_some() {
+            self.last_bus_bridge_transaction = delta.last_bus_bridge_transaction;
         }
     }
 }
@@ -834,7 +850,11 @@ impl C64Core {
         diagnostics: &mut CoreDiagnostics,
         pending_sid_cycles: &mut u32,
     ) -> Result<u64, CoreError> {
-        self.run_cpu_slot_inner::<false>(diagnostics, pending_sid_cycles)
+        if self.execution.status().effective_slots == SlotsPerSystemCycle::STRICT {
+            self.run_cpu_slot_inner::<true>(diagnostics, pending_sid_cycles)
+        } else {
+            self.run_cpu_slot_inner::<false>(diagnostics, pending_sid_cycles)
+        }
     }
 
     #[inline]
@@ -1145,6 +1165,7 @@ struct ClockedCpuBus<'a, const STRICT: bool> {
     diagnostics: &'a mut CoreDiagnostics,
     pending_sid_cycles: &'a mut u32,
     passive_cpu_read: Option<(u16, u8)>,
+    board_inputs_current: bool,
     completed_system_cycle: bool,
     hardware_error: Option<C64ChipsetError>,
 }
@@ -1168,6 +1189,7 @@ impl<'a, const STRICT: bool> ClockedCpuBus<'a, STRICT> {
             diagnostics,
             pending_sid_cycles,
             passive_cpu_read: None,
+            board_inputs_current: false,
             completed_system_cycle: false,
             hardware_error: None,
         }
@@ -1271,11 +1293,89 @@ impl<'a, const STRICT: bool> ClockedCpuBus<'a, STRICT> {
                 self.diagnostics.elapsed_system_cycles.wrapping_add(1);
         }
     }
+
+    fn cpu_bus_request(
+        &mut self,
+        access: BusAccessKind,
+        address: u16,
+        value: u8,
+    ) -> (BusRequest, PageDescriptor) {
+        self.address_space
+            .synchronize_cpu_mapping(self.devices.cartridge_lines());
+        let mut descriptor = match access {
+            BusAccessKind::Read => self.address_space.memory().classify_read(address),
+            BusAccessKind::Write => self.address_space.memory().classify_write(address),
+        };
+        if self.devices.reu().is_some()
+            && (address >> 8 == 0xdf || matches!(access, BusAccessKind::Write) && address == 0xff00)
+        {
+            descriptor =
+                PageDescriptor::bridged(PhysicalTarget::Reu, matches!(access, BusAccessKind::Read));
+        }
+        (
+            BusRequest {
+                timestamp: self.clock.timestamp(),
+                master: BusMaster::Cpu,
+                access,
+                address: u32::from(address),
+                value,
+                target: descriptor.target,
+            },
+            descriptor,
+        )
+    }
+}
+
+impl<const STRICT: bool> BusBridge for ClockedCpuBus<'_, STRICT> {
+    fn transact(&mut self, request: BusRequest) -> BusResponse {
+        debug_assert_eq!(request.master, BusMaster::Cpu);
+        debug_assert_eq!(request.timestamp, self.clock.timestamp());
+        let Ok(address) = u16::try_from(request.address) else {
+            return BusResponse {
+                value: self.devices.open_bus_value(),
+                ..BusResponse::default()
+            };
+        };
+        let mapping_before = self.address_space.memory().mapping_generation();
+        let value = match request.access {
+            BusAccessKind::Read => {
+                if let Some((passive_address, value)) = self.passive_cpu_read.take()
+                    && passive_address == address
+                {
+                    value
+                } else {
+                    let mut bus = if self.board_inputs_current {
+                        self.address_space.cpu_bus_after_passive_read(self.devices)
+                    } else {
+                        self.address_space.cpu_bus(self.devices)
+                    };
+                    bus.read(address)
+                }
+            }
+            BusAccessKind::Write => {
+                self.address_space
+                    .cpu_bus(self.devices)
+                    .write(address, request.value);
+                request.value
+            }
+        };
+        BusResponse {
+            value,
+            wait_system_cycles: 0,
+            mapping_changed: mapping_before != self.address_space.memory().mapping_generation(),
+            dma_requested: self.devices.reu().is_some_and(RamExpansionUnit::dma_active),
+        }
+    }
+
+    fn next_external_event(&self) -> Option<VirtualTimestamp> {
+        Some(self.clock.next_external_event())
+    }
 }
 
 impl<const STRICT: bool> CpuBus for ClockedCpuBus<'_, STRICT> {
     fn read(&mut self, address: u16) -> u8 {
         self.devices.begin_cpu_read();
+        let held_cycles_before = self.diagnostics.held_cpu_read_system_cycles;
         let mut board_inputs_current = self.begin_cpu_slot(Some(address));
         while self.devices.ba_low() && self.hardware_error.is_none() {
             self.devices.mark_cpu_read_held();
@@ -1287,17 +1387,40 @@ impl<const STRICT: bool> CpuBus for ClockedCpuBus<'_, STRICT> {
         if address_may_select_sid(address) {
             self.flush_sid_cycles();
         }
-        let value = if let Some((passive_address, value)) = self.passive_cpu_read.take()
-            && passive_address == address
-        {
-            value
-        } else {
-            let mut bus = if board_inputs_current {
-                self.address_space.cpu_bus_after_passive_read(self.devices)
+        let value = if STRICT {
+            if let Some((passive_address, value)) = self.passive_cpu_read.take()
+                && passive_address == address
+            {
+                value
             } else {
-                self.address_space.cpu_bus(self.devices)
-            };
-            bus.read(address)
+                let mut bus = if board_inputs_current {
+                    self.address_space.cpu_bus_after_passive_read(self.devices)
+                } else {
+                    self.address_space.cpu_bus(self.devices)
+                };
+                bus.read(address)
+            }
+        } else {
+            self.board_inputs_current = board_inputs_current;
+            let (request, descriptor) = self.cpu_bus_request(
+                BusAccessKind::Read,
+                address,
+                self.address_space.cpu_data_bus_latch(),
+            );
+            let mut response = self.transact(request);
+            response.wait_system_cycles = u32::try_from(
+                self.diagnostics
+                    .held_cpu_read_system_cycles
+                    .wrapping_sub(held_cycles_before),
+            )
+            .unwrap_or(u32::MAX);
+            self.diagnostics
+                .record_bus_bridge_transaction(BusBridgeTransaction {
+                    request,
+                    domain: descriptor.domain,
+                    response,
+                });
+            response.value
         };
         self.diagnostics
             .record_cpu_bus_transaction(CpuBusTransaction {
@@ -1316,9 +1439,19 @@ impl<const STRICT: bool> CpuBus for ClockedCpuBus<'_, STRICT> {
         if address_may_select_sid(address) {
             self.flush_sid_cycles();
         }
-        {
-            let mut bus = self.address_space.cpu_bus(self.devices);
-            bus.write(address, value);
+        if STRICT {
+            self.address_space
+                .cpu_bus(self.devices)
+                .write(address, value);
+        } else {
+            let (request, descriptor) = self.cpu_bus_request(BusAccessKind::Write, address, value);
+            let response = self.transact(request);
+            self.diagnostics
+                .record_bus_bridge_transaction(BusBridgeTransaction {
+                    request,
+                    domain: descriptor.domain,
+                    response,
+                });
         }
         self.diagnostics
             .record_cpu_bus_transaction(CpuBusTransaction {
@@ -1436,7 +1569,9 @@ mod tests {
     use crate::{
         address_space::{BASIC_ROM_BYTES, C64Firmware, CHARACTER_ROM_BYTES, KERNAL_ROM_BYTES},
         architecture::{CoreConfig, MachineProfile},
-        memory::MemoryWriteSource,
+        bus::BusAccessKind,
+        devices::reu::ReuSize,
+        memory::{MemoryWriteSource, PageDomain, PhysicalTarget},
     };
 
     use super::{C64Core, CpuBusAccessKind};
@@ -1465,6 +1600,103 @@ mod tests {
         core.run_cpu_slots(1).unwrap();
         assert!(core.cpu_is_at_instruction_boundary());
         assert!(core.set_cpu_program_counter(0x2000));
+    }
+
+    #[test]
+    fn processor_port_write_reports_an_ordered_bus_bridge_mapping_exit() {
+        let mut core = C64Core::default();
+        core.request_manual_turbo(2).unwrap();
+        // LDA #$07; STA $00. The reset output latch is zero, so enabling the
+        // low three outputs changes the PLA banking configuration.
+        for (address, value) in [
+            (0x2000, 0xa9),
+            (0x2001, 0x07),
+            (0x2002, 0x85),
+            (0x2003, 0x00),
+        ] {
+            core.write_base_ram(address, value, MemoryWriteSource::HostLoader);
+        }
+        assert!(core.set_cpu_program_counter(0x2000));
+
+        core.run_cpu_slots(5).unwrap();
+
+        let transaction = core
+            .diagnostics()
+            .last_bus_bridge_transaction
+            .expect("STA $00 must publish its final bus transaction");
+        assert_eq!(transaction.request.access, BusAccessKind::Write);
+        assert_eq!(transaction.request.address, 0x0000);
+        assert_eq!(transaction.request.value, 0x07);
+        assert_eq!(transaction.domain, PageDomain::BusBridge);
+        assert_eq!(transaction.request.target, PhysicalTarget::ProcessorPort);
+        assert!(transaction.response.mapping_changed);
+        assert!(!transaction.response.dma_requested);
+    }
+
+    #[test]
+    fn reu_command_write_reports_dma_ownership_before_the_next_cpu_slot() {
+        let mut core = C64Core::default();
+        core.attach_reu(ReuSize::Kib512).unwrap();
+        core.request_manual_turbo(2).unwrap();
+        // LDA #$90; STA $df01 (execute immediately, C64 -> REU).
+        for (address, value) in [
+            (0x2000, 0xa9),
+            (0x2001, 0x90),
+            (0x2002, 0x8d),
+            (0x2003, 0x01),
+            (0x2004, 0xdf),
+        ] {
+            core.write_base_ram(address, value, MemoryWriteSource::HostLoader);
+        }
+        assert!(core.set_cpu_program_counter(0x2000));
+
+        core.run_cpu_slots(6).unwrap();
+
+        let transaction = core
+            .diagnostics()
+            .last_bus_bridge_transaction
+            .expect("the REU command must publish its bus transaction");
+        assert_eq!(transaction.request.access, BusAccessKind::Write);
+        assert_eq!(transaction.request.address, 0xdf01);
+        assert_eq!(transaction.request.value, 0x90);
+        assert_eq!(transaction.domain, PageDomain::BusBridge);
+        assert_eq!(transaction.request.target, PhysicalTarget::Reu);
+        assert!(!transaction.response.mapping_changed);
+        assert!(transaction.response.dma_requested);
+    }
+
+    #[test]
+    fn reu_ff00_trigger_cannot_bypass_the_bus_bridge_as_hidden_ram() {
+        let mut core = C64Core::default();
+        core.attach_reu(ReuSize::Kib512).unwrap();
+        core.reu_mut().unwrap().write_register(0xdf01, 0x80);
+        core.request_manual_turbo(2).unwrap();
+        assert!(core.reu().unwrap().ff00_trigger_armed());
+        // LDA #$5a; STA $ff00
+        for (address, value) in [
+            (0x2000, 0xa9),
+            (0x2001, 0x5a),
+            (0x2002, 0x8d),
+            (0x2003, 0x00),
+            (0x2004, 0xff),
+        ] {
+            core.write_base_ram(address, value, MemoryWriteSource::HostLoader);
+        }
+        assert!(core.set_cpu_program_counter(0x2000));
+
+        core.run_cpu_slots(6).unwrap();
+
+        let transaction = core
+            .diagnostics()
+            .last_bus_bridge_transaction
+            .expect("the $ff00 trigger must publish its bus transaction");
+        assert_eq!(transaction.request.access, BusAccessKind::Write);
+        assert_eq!(transaction.request.address, 0xff00);
+        assert_eq!(transaction.request.value, 0x5a);
+        assert_eq!(transaction.domain, PageDomain::BusBridge);
+        assert_eq!(transaction.request.target, PhysicalTarget::Reu);
+        assert!(transaction.response.dma_requested);
+        assert_eq!(core.read_base_ram(0xff00), 0x5a);
     }
 
     #[test]

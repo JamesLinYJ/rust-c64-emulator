@@ -87,13 +87,21 @@ Vite bundle 的缺口，远端 [CI run 31496827909](https://github.com/JamesLinY
 
 ## M2：Turbo 语义
 
-- [ ] 实现每系统周期 2..64 个内部 CPU 槽位和一次性锁定 Auto 档位。
-- [ ] 实现物理页能力、代码版本、映射 generation 和统一地址空间分类。
+- [x] 实现每系统周期 2..64 个内部 CPU 槽位和一次性锁定 Auto 档位。
+- [x] 实现物理页能力、代码版本、映射 generation 和统一地址空间分类。
 - [ ] 实现强顺序 BusBridge、VIC 优先、REU/DMA 所有权和精确事件退出。
 - [ ] 实现自修改代码、隐藏 RAM、Cartridge bank 和 DMA 写入失效。
 - [ ] 实现 opt-in `$D030/$D031`、`$D07A/$D07B`，Reset 恢复 Strict/1MHz。
 
 验收：Strict/Turbo 随机差分和全部桥接边界通过，不存在软件专用路径。
+
+阶段进展（2026年08月12日）：简单指令执行器已在 2、4、8、12、16、20、24、32、48、64
+档位上连续执行 4,096 个纯 RAM CPU 槽位，并与 Strict 的 CPU 状态、RAM 写入和总线事务逐项一致；
+虚拟时钟现能给出不得越过的下一外设事件边界。`CodePageGuard` 同时校验物理页能力、页代码
+generation 和全局映射 generation，CPU、REU、Enhanced DMA、Host 写入共用同一失效路径。
+Turbo CPU 访问已通过强顺序 `BusBridge` 报告处理器端口映射变化、REU 即时 DMA 和 `$FF00`
+延迟触发，Strict 继续走无额外桥接 trace 的原周期精确热路径。非 CPU 总线主控的统一桥接、block
+执行器精确退出和本节其余验收尚未完成，因此 M2 不标记完成。
 
 ## M3：Turbo 执行引擎
 

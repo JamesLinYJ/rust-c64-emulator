@@ -343,6 +343,10 @@ impl C64AddressSpace {
         self.refresh_page_descriptors();
     }
 
+    pub(crate) fn synchronize_cpu_mapping(&mut self, lines: CartridgeLines) {
+        self.synchronize_pla(lines);
+    }
+
     fn refresh_page_descriptors(&mut self) {
         let mut descriptors =
             [(PageDescriptor::FAST_RAM, PageDescriptor::FAST_RAM); BASE_PAGE_COUNT];

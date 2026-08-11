@@ -76,6 +76,37 @@ struct PageMetadata {
     code_generation: u64,
 }
 
+/// Immutable validation token for code decoded from one physical 256-byte page.
+///
+/// The token deliberately includes the global mapping generation: a mapping
+/// transition may change the bytes visible at the same logical address without
+/// modifying the underlying RAM page.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct CodePageGuard {
+    page: u8,
+    descriptor: PageDescriptor,
+    mapping_generation: u64,
+    code_generation: u64,
+}
+
+impl CodePageGuard {
+    pub const fn page(self) -> u8 {
+        self.page
+    }
+
+    pub const fn descriptor(self) -> PageDescriptor {
+        self.descriptor
+    }
+
+    pub const fn mapping_generation(self) -> u64 {
+        self.mapping_generation
+    }
+
+    pub const fn code_generation(self) -> u64 {
+        self.code_generation
+    }
+}
+
 impl PageMetadata {
     const INITIAL: Self = Self {
         read_descriptor: PageDescriptor::FAST_RAM,
@@ -211,6 +242,27 @@ impl CoherentMemory {
         self.pages[usize::from(page)].code_generation
     }
 
+    /// Capture the capabilities and generations required to reuse decoded code
+    /// from one logical page.
+    pub fn code_page_guard(&self, page: u8) -> CodePageGuard {
+        let metadata = self.pages[usize::from(page)];
+        CodePageGuard {
+            page,
+            descriptor: metadata.read_descriptor,
+            mapping_generation: self.mapping_generation,
+            code_generation: metadata.code_generation,
+        }
+    }
+
+    /// Return whether a previously captured code-page token still describes
+    /// exactly the same visible mapping and physical bytes.
+    pub fn code_page_guard_is_current(&self, guard: CodePageGuard) -> bool {
+        let metadata = self.pages[usize::from(guard.page)];
+        guard.mapping_generation == self.mapping_generation
+            && guard.code_generation == metadata.code_generation
+            && guard.descriptor == metadata.read_descriptor
+    }
+
     pub const fn mapping_generation(&self) -> u64 {
         self.mapping_generation
     }
@@ -242,7 +294,7 @@ fn zeroed_base_ram() -> Box<[u8; BASE_RAM_BYTES]> {
 
 #[cfg(test)]
 mod tests {
-    use super::{CoherentMemory, MemoryWriteSource, PageDomain, PhysicalTarget};
+    use super::{CoherentMemory, MemoryWriteSource, PageDescriptor, PageDomain, PhysicalTarget};
 
     #[test]
     fn every_writer_participates_in_the_same_page_generation() {
@@ -274,5 +326,32 @@ mod tests {
         assert_eq!(memory.classify(0xd800).target, PhysicalTarget::ColorRam);
         assert_eq!(memory.classify(0xdc00).target, PhysicalTarget::Cia1);
         assert_eq!(memory.classify(0x4000).domain, PageDomain::Fast);
+    }
+
+    #[test]
+    fn code_page_guards_track_local_writers_and_mapping_changes() {
+        let mut memory = CoherentMemory::new();
+        let guard = memory.code_page_guard(0x40);
+
+        memory.write_base_ram(0x4100, 0x11, MemoryWriteSource::Cpu);
+        assert!(memory.code_page_guard_is_current(guard));
+
+        for (index, source) in [
+            MemoryWriteSource::Cpu,
+            MemoryWriteSource::Reu,
+            MemoryWriteSource::EnhancedDma,
+            MemoryWriteSource::HostLoader,
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            let guard = memory.code_page_guard(0x40);
+            memory.write_base_ram(0x4000, u8::try_from(index).unwrap(), source);
+            assert!(!memory.code_page_guard_is_current(guard));
+        }
+
+        let guard = memory.code_page_guard(0x40);
+        memory.set_page_descriptor(0x41, PageDescriptor::bridged(PhysicalTarget::Vic, true));
+        assert!(!memory.code_page_guard_is_current(guard));
     }
 }

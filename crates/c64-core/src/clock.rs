@@ -60,6 +60,33 @@ impl VirtualClock {
         self.slots_per_system_cycle
     }
 
+    /// Return the next boundary at which C64 devices must be advanced.
+    ///
+    /// A slot-zero timestamp has not serviced that boundary yet, so it is the
+    /// event itself. Once an internal Turbo slot has retired, the next event is
+    /// slot zero of the following system cycle.
+    pub const fn next_external_event(self) -> VirtualTimestamp {
+        if self.timestamp.slot == 0 {
+            self.timestamp
+        } else {
+            VirtualTimestamp {
+                system_cycle: self.timestamp.system_cycle.wrapping_add(1),
+                slot: 0,
+            }
+        }
+    }
+
+    /// Number of CPU slots a fast executor may retire without crossing the next
+    /// external-device event. Zero means the scheduler must service hardware
+    /// before executing another CPU slot.
+    pub const fn cpu_slots_before_next_external_event(self) -> u8 {
+        if self.timestamp.slot == 0 {
+            0
+        } else {
+            self.slots_per_system_cycle.get() - self.timestamp.slot
+        }
+    }
+
     /// 只在系统周期边界切换内部槽位预算。
     ///
     /// # Errors
@@ -175,6 +202,27 @@ mod tests {
         assert!(clock.consume_cpu_slot());
         assert_eq!(
             clock.timestamp(),
+            VirtualTimestamp {
+                system_cycle: 1,
+                slot: 0,
+            }
+        );
+    }
+
+    #[test]
+    fn turbo_event_horizon_never_crosses_an_external_system_cycle() {
+        let mut clock = VirtualClock::new();
+        clock
+            .set_slots_per_system_cycle(SlotsPerSystemCycle::try_turbo(8).unwrap())
+            .unwrap();
+
+        assert_eq!(clock.cpu_slots_before_next_external_event(), 0);
+        assert_eq!(clock.next_external_event(), clock.timestamp());
+
+        assert!(!clock.consume_cpu_slot());
+        assert_eq!(clock.cpu_slots_before_next_external_event(), 7);
+        assert_eq!(
+            clock.next_external_event(),
             VirtualTimestamp {
                 system_cycle: 1,
                 slot: 0,
