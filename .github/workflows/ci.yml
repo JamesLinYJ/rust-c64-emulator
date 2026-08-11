@@ -150,3 +150,34 @@ jobs:
 
       - name: Run browser regression gate
         run: npm run verify:browser
+
+  browser-compatibility:
+    name: Cross-browser production Worker/Wasm
+    needs: rust
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v7
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v7
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Install Chrome, Edge, Firefox and WebKit
+        run: npx playwright install --with-deps chrome msedge firefox webkit
+
+      - name: Download production browser package
+        uses: actions/download-artifact@v7
+        with:
+          name: c64-production-site
+          path: dist/client
+
+      - name: Run cross-browser Worker/Wasm gate
+        run: npm run verify:browser:compatibility
