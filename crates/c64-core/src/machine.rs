@@ -952,6 +952,19 @@ impl C64Core {
         diagnostics: &mut CoreDiagnostics,
         pending_sid_cycles: &mut u32,
     ) -> Result<u64, CoreError> {
+        if !self.devices.reu().is_some_and(RamExpansionUnit::dma_active) {
+            return Ok(0);
+        }
+        self.service_active_reu_dma::<STRICT>(diagnostics, pending_sid_cycles)
+    }
+
+    #[cold]
+    #[inline(never)]
+    fn service_active_reu_dma<const STRICT: bool>(
+        &mut self,
+        diagnostics: &mut CoreDiagnostics,
+        pending_sid_cycles: &mut u32,
+    ) -> Result<u64, CoreError> {
         let mut elapsed_cycles = 0;
         while self.devices.reu().is_some_and(RamExpansionUnit::dma_active) {
             let hardware_error = {
