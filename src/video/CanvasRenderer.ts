@@ -20,12 +20,12 @@ import { PAL_VIDEO_STANDARD } from './palVideoStandard';
 export class CanvasRenderer {
   readonly surface: CanvasSurface;
 
-  constructor(canvas: HTMLCanvasElement, initialBackgroundColor: number) {
-    this.surface = new CanvasSurface(
-      canvas,
-      PAL_VIDEO_STANDARD.output.width,
-      PAL_VIDEO_STANDARD.output.height,
-    );
+  constructor(
+    canvas: HTMLCanvasElement,
+    initialBackgroundColor: number,
+    size: { readonly height: number; readonly width: number } = C64_CANVAS_SIZE,
+  ) {
+    this.surface = new CanvasSurface(canvas, size.width, size.height);
     this.surface.clear(initialBackgroundColor);
     this.surface.present();
   }

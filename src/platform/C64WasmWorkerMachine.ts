@@ -73,6 +73,7 @@ export interface C64WasmVm {
   mount_drive1541_d64(bytes: Uint8Array, writeProtected: boolean): void;
   mount_drive1541_g64(bytes: Uint8Array, writeProtected: boolean): void;
   program_counter(): number;
+  processor_clock_hz(): number;
   reset(): void;
   reu_attached(): boolean;
   reu_dma_active(): boolean;
@@ -98,6 +99,8 @@ export interface C64WasmVm {
   tape_stop(): void;
   tape_transport(): number;
   tape_writable(): boolean;
+  video_frame_cycles(): number;
+  video_standard(): number;
 }
 
 export interface C64WorkerOperationExecution {

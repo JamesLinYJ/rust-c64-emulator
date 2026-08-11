@@ -8,7 +8,7 @@
 //   Author:     OpenAI Codex
 // --------------------------------------------------------------------------
 
-import { spawnSync } from 'node:child_process';
+import { spawn } from 'node:child_process';
 
 import { Mos6526 } from '../src/devices/Mos6526';
 import { MOS_6526_MODEL, type Mos6526Model } from '../src/devices/Mos6526Model';
@@ -74,6 +74,7 @@ interface Observation {
 const PROCESSOR_CLOCK_HZ = 1_000;
 const TIME_OF_DAY_INPUT_HZ = 50;
 const RANDOM_OPERATION_COUNT = 20_000;
+const MAXIMUM_TRACE_BYTES = 64 * 1024 * 1024;
 
 function fixedRandom(seed: number): () => number {
   let state = seed >>> 0;
@@ -185,22 +186,57 @@ function runTypeScriptScenario(
   });
 }
 
-function requireRustResults(scenarios: readonly Scenario[]): readonly (readonly Observation[])[] {
-  const result = spawnSync(
+async function requireRustResults(
+  scenarios: readonly Scenario[],
+): Promise<readonly (readonly Observation[])[]> {
+  const child = spawn(
     'cargo',
     ['run', '--quiet', '--locked', '-p', 'c64-core', '--example', 'cia_trace'],
     {
       cwd: process.cwd(),
-      encoding: 'utf8',
-      input: JSON.stringify(scenarios),
-      maxBuffer: 64 * 1024 * 1024,
+      stdio: ['pipe', 'pipe', 'pipe'],
     },
   );
-  if (result.error) throw result.error;
-  if (result.status !== 0) {
-    throw new Error(`Rust CIA trace adapter failed (${String(result.status)}):\n${result.stderr}`);
+
+  const stdout: Buffer[] = [];
+  const stderr: Buffer[] = [];
+  let stdoutBytes = 0;
+  let stderrBytes = 0;
+  let outputLimitExceeded = false;
+  child.stdout.on('data', (chunk: Buffer) => {
+    stdoutBytes += chunk.byteLength;
+    if (stdoutBytes > MAXIMUM_TRACE_BYTES) {
+      outputLimitExceeded = true;
+      child.kill();
+      return;
+    }
+    stdout.push(chunk);
+  });
+  child.stderr.on('data', (chunk: Buffer) => {
+    stderrBytes += chunk.byteLength;
+    if (stderrBytes > MAXIMUM_TRACE_BYTES) {
+      outputLimitExceeded = true;
+      child.kill();
+      return;
+    }
+    stderr.push(chunk);
+  });
+
+  const completion = new Promise<number | null>((resolve, reject) => {
+    child.once('error', reject);
+    child.once('close', resolve);
+  });
+  child.stdin.end(JSON.stringify(scenarios));
+  const exitCode = await completion;
+  if (outputLimitExceeded) {
+    throw new Error(`Rust CIA trace adapter exceeded ${MAXIMUM_TRACE_BYTES} output bytes.`);
   }
-  return JSON.parse(result.stdout) as readonly (readonly Observation[])[];
+  if (exitCode !== 0) {
+    throw new Error(
+      `Rust CIA trace adapter failed (${String(exitCode)}):\n${Buffer.concat(stderr).toString('utf8')}`,
+    );
+  }
+  return JSON.parse(Buffer.concat(stdout).toString('utf8')) as readonly (readonly Observation[])[];
 }
 
 const operations = buildOperations(0x6526_2026);
@@ -218,7 +254,7 @@ const scenarios: readonly Scenario[] = [
     operations,
   },
 ];
-const rustResults = requireRustResults(scenarios);
+const rustResults = await requireRustResults(scenarios);
 const models = [MOS_6526_MODEL.original, MOS_6526_MODEL.revised] as const;
 for (const [scenarioIndex, model] of models.entries()) {
   const expected = runTypeScriptScenario(model, operations);

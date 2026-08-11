@@ -79,6 +79,7 @@ function createVm() {
     mount_drive1541_d64: vi.fn(),
     mount_drive1541_g64: mountDrive1541G64,
     program_counter: vi.fn(() => 0xe5cd),
+    processor_clock_hz: vi.fn(() => 985_248),
     reset,
     reu_attached: vi.fn(() => true),
     reu_dma_active: vi.fn(() => false),
@@ -98,6 +99,8 @@ function createVm() {
     tape_stop: vi.fn(),
     tape_transport: vi.fn(() => 1),
     tape_writable: vi.fn(() => false),
+    video_frame_cycles: vi.fn(() => 63 * 312),
+    video_standard: vi.fn(() => 0),
   };
   return {
     attachDrive1541,

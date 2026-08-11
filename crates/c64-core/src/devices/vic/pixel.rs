@@ -260,6 +260,10 @@ impl VicPixelPipeline {
         }
     }
 
+    pub const fn timing(&self) -> VicTiming {
+        self.timing
+    }
+
     pub fn reset(&mut self, border_color: u32) {
         self.line_pixels.fill(border_color);
         self.border_color_output_delay = Some(border_color);

@@ -8,10 +8,9 @@
 //   作者:       OpenAI Codex
 // --------------------------------------------------------------------------
 
-import { Float32RingBuffer } from '../shared/Float32RingBuffer';
+import { PcmAudioPlaybackBuffer } from './PcmAudioPlaybackBuffer';
 import {
   C64_PCM_AUDIO_PROCESSOR_NAME,
-  C64_PCM_BUFFER_DURATION_SECONDS,
   C64_PCM_METRICS_INTERVAL_QUANTA,
   type PcmAudioStreamMetrics,
   type PcmAudioWorkletCommand,
@@ -31,12 +30,9 @@ declare abstract class AudioWorkletProcessor {
 declare function registerProcessor(name: string, processor: new () => AudioWorkletProcessor): void;
 
 class C64PcmAudioWorklet extends AudioWorkletProcessor {
-  private readonly samples = new Float32RingBuffer(
-    Math.ceil(sampleRate * C64_PCM_BUFFER_DURATION_SECONDS),
-  );
+  private readonly playback = new PcmAudioPlaybackBuffer(sampleRate);
   private clearCount = 0;
   private overrunSamples = 0;
-  private underrunSamples = 0;
   private quantaSinceMetrics = 0;
 
   constructor() {
@@ -52,13 +48,7 @@ class C64PcmAudioWorklet extends AudioWorkletProcessor {
     outputs: readonly (readonly Float32Array[])[],
   ): boolean {
     const output = outputs[0]?.[0];
-    if (output) {
-      const written = this.samples.pullInto(output);
-      if (written < output.length) {
-        output.fill(0, written);
-        this.underrunSamples += output.length - written;
-      }
-    }
+    if (output) this.playback.render(output);
 
     this.quantaSinceMetrics += 1;
     if (this.quantaSinceMetrics >= C64_PCM_METRICS_INTERVAL_QUANTA) this.publishMetrics();
@@ -67,7 +57,7 @@ class C64PcmAudioWorklet extends AudioWorkletProcessor {
 
   private handleCommand(command: PcmAudioWorkletCommand): void {
     if (command.type === 'clear') {
-      this.samples.clear();
+      this.playback.clear();
       this.clearCount += 1;
       this.publishMetrics();
       return;
@@ -82,7 +72,7 @@ class C64PcmAudioWorklet extends AudioWorkletProcessor {
       return;
     }
     const samples = new Float32Array(command.buffer, 0, command.sampleCount);
-    const dropped = this.samples.pushMany(samples);
+    const dropped = this.playback.push(samples);
     this.port.postMessage(
       {
         buffer: command.buffer,
@@ -101,12 +91,12 @@ class C64PcmAudioWorklet extends AudioWorkletProcessor {
   private publishMetrics(): void {
     this.quantaSinceMetrics = 0;
     const metrics: PcmAudioStreamMetrics = {
-      bufferedSamples: this.samples.size,
-      capacitySamples: this.samples.capacity,
+      bufferedSamples: this.playback.bufferedSamples,
+      capacitySamples: this.playback.capacitySamples,
       clearCount: this.clearCount,
       overrunSamples: this.overrunSamples,
       type: 'metrics',
-      underrunSamples: this.underrunSamples,
+      underrunSamples: this.playback.underrunSamples,
     };
     this.port.postMessage(metrics);
   }

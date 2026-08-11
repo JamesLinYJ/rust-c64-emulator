@@ -110,6 +110,7 @@ export type C64WorkerCommand =
       readonly firmware: C64WorkerFirmwareBuffers;
       readonly requestId: number;
       readonly type: 'initialize';
+      readonly videoStandard: 0 | 1;
       readonly wasmModuleUrl: string;
     }
   | { readonly type: 'start' }
@@ -138,9 +139,12 @@ export type C64WorkerCommand =
 
 export interface C64WorkerInitializedEvent {
   readonly height: number;
+  readonly processorClockHz: number;
   readonly requestId: number;
   readonly sampleRate: number;
   readonly type: 'initialized';
+  readonly videoFrameCycles: number;
+  readonly videoStandard: 0 | 1;
   readonly width: number;
 }
 

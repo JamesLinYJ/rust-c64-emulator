@@ -30,7 +30,7 @@ pub struct VicBorderSignals {
     pub row_select: bool,
 }
 
-/// PAL 6569 的垂直、主边框触发器，以及 38 列模式下跨八像素组的输出锁存。
+/// 6569/6567 的垂直、主边框触发器，以及 38 列模式下跨八像素组的输出锁存。
 #[derive(Clone, Copy, Debug, Eq, PartialEq, wincode::SchemaRead, wincode::SchemaWrite)]
 pub struct VicBorderController {
     timing: VicTiming,
@@ -49,6 +49,10 @@ impl VicBorderController {
             timing,
             state: RESET_STATE,
         }
+    }
+
+    pub const fn timing(&self) -> VicTiming {
+        self.timing
     }
 
     pub fn tick(&mut self, signals: VicBorderSignals) -> u8 {

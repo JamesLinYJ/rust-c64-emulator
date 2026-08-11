@@ -24,7 +24,12 @@ import {
 import { C64ControlPorts } from '../peripherals/control/C64ControlPorts';
 import { assertSha256 } from '../shared/BinaryIntegrity';
 import { TypedEventEmitter } from '../shared/TypedEventEmitter';
-import { CanvasRenderer, C64_CANVAS_SIZE } from '../video/CanvasRenderer';
+import { CanvasRenderer } from '../video/CanvasRenderer';
+import {
+  C64_VIDEO_STANDARDS,
+  videoStandardCode,
+  type C64VideoStandard,
+} from '../video/C64VideoStandard';
 import { BrowserC64Input } from './BrowserC64Input';
 import { fetchBinary, loadFirmware } from './FirmwareLoader';
 import type {
@@ -41,6 +46,7 @@ import type {
   C64WorkerState,
 } from './C64WasmWorkerProtocol';
 import { WebAudioOutput, type WebAudioOutputStatus } from './WebAudioOutput';
+import type { PcmAudioStreamMetrics } from './PcmAudioWorkletProtocol';
 
 interface C64WorkerEmulatorEvents {
   readonly audioState: WebAudioOutputStatus;
@@ -142,10 +148,11 @@ export class C64WorkerEmulator extends TypedEventEmitter<C64WorkerEmulatorEvents
     canvas: HTMLCanvasElement,
     keyboardTarget: EventTarget,
     options: C64EmulatorOptions,
+    videoSize: { readonly height: number; readonly width: number },
   ) {
     super();
     this.fetcher = options.fetcher ?? fetch;
-    this.renderer = new CanvasRenderer(canvas, 0xff000000);
+    this.renderer = new CanvasRenderer(canvas, 0xff000000, videoSize);
     this.audioOutput = new WebAudioOutput(options.audioTarget ?? document);
     this.stopObservingAudioState = this.audioOutput.observeStatus((status) =>
       this.emit('audioState', status),
@@ -180,6 +187,7 @@ export class C64WorkerEmulator extends TypedEventEmitter<C64WorkerEmulatorEvents
 
   static async create(options: C64EmulatorOptions = {}): Promise<C64WorkerEmulator> {
     const signal = options.signal;
+    const videoStandard = options.videoStandard ?? 'pal';
     signal?.throwIfAborted();
     const firmware = await loadFirmware(options.firmwareUrls, options.fetcher ?? fetch, signal);
     signal?.throwIfAborted();
@@ -189,20 +197,14 @@ export class C64WorkerEmulator extends TypedEventEmitter<C64WorkerEmulatorEvents
       type: 'module',
     });
     try {
-      const initialized = await initializeWorker(worker, firmware, signal);
-      if (
-        initialized.width !== C64_CANVAS_SIZE.width ||
-        initialized.height !== C64_CANVAS_SIZE.height
-      ) {
-        throw new Error(
-          `Rust/Wasm video size ${initialized.width}x${initialized.height} does not match the PAL canvas.`,
-        );
-      }
+      const initialized = await initializeWorker(worker, firmware, videoStandard, signal);
+      validateInitializedVideo(initialized, videoStandard);
       return new C64WorkerEmulator(
         worker,
         options.canvas ?? document.createElement('canvas'),
         options.keyboardTarget ?? document,
         options,
+        { height: initialized.height, width: initialized.width },
       );
     } catch (error: unknown) {
       worker.terminate();
@@ -220,6 +222,10 @@ export class C64WorkerEmulator extends TypedEventEmitter<C64WorkerEmulatorEvents
 
   get audioStatus(): WebAudioOutputStatus {
     return this.audioOutput.status;
+  }
+
+  get audioStreamMetrics(): PcmAudioStreamMetrics {
+    return this.audioOutput.streamMetrics;
   }
 
   enableAudio(): Promise<WebAudioOutputStatus> {
@@ -496,7 +502,10 @@ export class C64WorkerEmulator extends TypedEventEmitter<C64WorkerEmulatorEvents
 
   private presentFrame(frame: C64WorkerFrameEvent): void {
     try {
-      if (frame.width !== C64_CANVAS_SIZE.width || frame.height !== C64_CANVAS_SIZE.height) {
+      if (
+        frame.width !== this.renderer.surface.width ||
+        frame.height !== this.renderer.surface.height
+      ) {
         throw new Error(`Worker frame has unexpected dimensions ${frame.width}x${frame.height}.`);
       }
       this.renderer.presentPixels(new Uint32Array(frame.frameBuffer));
@@ -601,6 +610,7 @@ export class C64WorkerEmulator extends TypedEventEmitter<C64WorkerEmulatorEvents
 async function initializeWorker(
   worker: WorkerPort,
   firmware: Awaited<ReturnType<typeof loadFirmware>>,
+  videoStandard: C64VideoStandard,
   signal?: AbortSignal,
 ): Promise<C64WorkerInitializedEvent> {
   const requestId = 1;
@@ -643,11 +653,32 @@ async function initializeWorker(
         firmware: { basic, character, kernal },
         requestId,
         type: 'initialize',
+        videoStandard: videoStandardCode(videoStandard),
         wasmModuleUrl,
       },
       [basic, character, kernal],
     );
   });
+}
+
+function validateInitializedVideo(
+  initialized: C64WorkerInitializedEvent,
+  videoStandard: C64VideoStandard,
+): void {
+  const expected = C64_VIDEO_STANDARDS[videoStandard];
+  if (
+    initialized.videoStandard !== expected.code ||
+    initialized.processorClockHz !== expected.processorClockHz ||
+    initialized.videoFrameCycles !== expected.cyclesPerFrame ||
+    initialized.width !== expected.rasterWidth ||
+    initialized.height !== expected.rasterHeight
+  ) {
+    throw new Error(
+      `Rust/Wasm ${expected.label} metadata ` +
+        `${initialized.width}x${initialized.height}, ${initialized.processorClockHz} Hz, ` +
+        `${initialized.videoFrameCycles} cycles does not match the platform contract.`,
+    );
+  }
 }
 
 function exactArrayBuffer(bytes: Uint8Array): ArrayBuffer {

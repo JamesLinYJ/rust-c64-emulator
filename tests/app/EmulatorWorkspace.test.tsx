@@ -23,7 +23,9 @@ function Harness() {
 
   return (
     <EmulatorWorkspace
+      audioOverrunSamples={0}
       audioStatus={{ state: 'inactive' }}
+      audioUnderrunSamples={0}
       bootComplete
       canvasRef={canvasRef}
       displayScale="fit"
@@ -41,6 +43,7 @@ function Harness() {
       renderP95Ms={1}
       sampledFrames={120}
       screenFrameRef={screenFrameRef}
+      videoStandard="pal"
     />
   );
 }

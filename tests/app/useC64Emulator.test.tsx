@@ -21,6 +21,8 @@ import {
 } from '../../src/app/useC64Emulator';
 import type { C64ProgramLoadOptions } from '../../src/core/C64Emulator';
 import { PRG_START_MODE } from '../../src/media/PrgLoader';
+import type { PcmAudioStreamMetrics } from '../../src/platform/PcmAudioWorkletProtocol';
+import type { C64VideoStandard } from '../../src/video/C64VideoStandard';
 
 const createEmulator = vi.fn<C64EmulatorFactory>();
 type EmulatorInstance = Awaited<ReturnType<C64EmulatorFactory>>;
@@ -37,6 +39,7 @@ interface Deferred<Value> {
 
 interface FakeEmulator {
   readonly audioStatus: { readonly state: 'inactive' };
+  readonly audioStreamMetrics: PcmAudioStreamMetrics;
   readonly basicReady: boolean;
   readonly dispose: ReturnType<typeof vi.fn>;
   readonly enableAudio: ReturnType<typeof vi.fn>;
@@ -76,6 +79,14 @@ function createFakeEmulator(): FakeEmulator {
   };
   const emulator: FakeEmulator = {
     audioStatus: { state: 'inactive' },
+    audioStreamMetrics: {
+      bufferedSamples: 0,
+      capacitySamples: 22_050,
+      clearCount: 0,
+      overrunSamples: 0,
+      type: 'metrics',
+      underrunSamples: 0,
+    },
     basicReady: true,
     dispose: vi.fn(() => listeners.clear()),
     enableAudio: vi.fn(() => Promise.resolve({ state: 'running' })),
@@ -105,10 +116,16 @@ function createFakeEmulator(): FakeEmulator {
   return emulator;
 }
 
-function Harness({ localProgram }: { readonly localProgram?: File }) {
+function Harness({
+  localProgram,
+  videoStandard = 'pal',
+}: {
+  readonly localProgram?: File;
+  readonly videoStandard?: C64VideoStandard;
+}) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const keyboardTargetRef = useRef<HTMLDivElement>(null);
-  const controller = useC64Emulator(canvasRef, keyboardTargetRef, createEmulator);
+  const controller = useC64Emulator(canvasRef, keyboardTargetRef, createEmulator, videoStandard);
   return (
     <div ref={keyboardTargetRef}>
       <canvas ref={canvasRef} />
@@ -221,6 +238,39 @@ describe('useC64Emulator initialization recovery', () => {
     });
     expect(staleEmulator.dispose).toHaveBeenCalledOnce();
     expect(staleEmulator.start).not.toHaveBeenCalled();
+  });
+
+  it('reinitializes the Worker backend when the video standard changes', async () => {
+    const palEmulator = createFakeEmulator();
+    const ntscEmulator = createFakeEmulator();
+    createEmulator
+      .mockResolvedValueOnce(palEmulator as unknown as EmulatorInstance)
+      .mockResolvedValueOnce(ntscEmulator as unknown as EmulatorInstance);
+
+    const container = document.querySelector<HTMLElement>('#test-root');
+    if (!container) throw new Error('Test root did not mount.');
+    const root = createRoot(container);
+    await act(async () => {
+      root.render(<Harness videoStandard="pal" />);
+      await Promise.resolve();
+    });
+    await act(async () => {
+      await vi.waitFor(() => expect(palEmulator.start).toHaveBeenCalledOnce());
+    });
+    expect(createEmulator.mock.calls[0]?.[0].videoStandard).toBe('pal');
+
+    await act(async () => {
+      root.render(<Harness videoStandard="ntsc" />);
+      await Promise.resolve();
+    });
+    await act(async () => {
+      await vi.waitFor(() => expect(ntscEmulator.start).toHaveBeenCalledOnce());
+    });
+    expect(palEmulator.dispose).toHaveBeenCalledOnce();
+    expect(createEmulator.mock.calls[1]?.[0].videoStandard).toBe('ntsc');
+
+    act(() => root.unmount());
+    expect(ntscEmulator.dispose).toHaveBeenCalledOnce();
   });
 
   it('uses BASIC RUN explicitly for local PRGs and exposes an incompatible load address', async () => {

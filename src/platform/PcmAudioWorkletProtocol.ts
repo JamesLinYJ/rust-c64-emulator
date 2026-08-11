@@ -10,6 +10,7 @@
 
 export const C64_PCM_AUDIO_PROCESSOR_NAME = 'c64-pcm-stream';
 export const C64_PCM_BUFFER_DURATION_SECONDS = 0.5;
+export const C64_PCM_START_BUFFER_DURATION_SECONDS = 0.04;
 export const C64_PCM_METRICS_INTERVAL_QUANTA = 32;
 
 export type PcmAudioWorkletCommand =

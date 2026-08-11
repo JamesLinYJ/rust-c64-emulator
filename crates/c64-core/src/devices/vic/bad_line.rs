@@ -98,6 +98,10 @@ impl VicBadLineController {
         }
     }
 
+    pub const fn timing(&self) -> VicTiming {
+        self.timing
+    }
+
     pub const fn active(self) -> bool {
         self.state_flag(CONTROLLER_BAD_LINE_ACTIVE)
     }

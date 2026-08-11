@@ -1,6 +1,6 @@
 // +-------------------------------------------------------------------------
 //
-//   Rust C64 Emulator - VIC-II PAL timing constants
+//   Rust C64 Emulator - VIC-II timing constants
 //
 //   File:       vic/timing.rs
 //
@@ -126,6 +126,60 @@ pub const PAL_VIC_TIMING: VicTiming = VicTiming {
         memory_counter_crunch_cycle: 15,
         memory_counter_update_cycle: 16,
         prepare_display_cycle: 58,
+        start_cycle_spacing: 2,
+    },
+};
+
+/// MOS 6567R8 timing, transcribed from VICE's cycle-exact NTSC table.
+pub const NTSC_VIC_TIMING: VicTiming = VicTiming {
+    bad_line: VicBadLineTiming {
+        ba_first_cycle: 12,
+        ba_last_cycle: 54,
+        first_raster_line: 0x30,
+        last_raster_line: 0xf7,
+    },
+    border: VicBorderTiming {
+        reduced_column_left_cycle: 18,
+        reduced_column_right_cycle: 56,
+        reduced_row_start_line: 0x37,
+        reduced_row_stop_line: 0xf7,
+        standard_column_left_cycle: 17,
+        standard_column_right_cycle: 57,
+        standard_row_start_line: 0x33,
+        standard_row_stop_line: 0xfb,
+    },
+    cycles_per_raster_line: 65,
+    fetch: VicFetchTiming {
+        graphics_first_cycle: 16,
+        graphics_last_cycle: 55,
+        idle_first_cycle: 56,
+        idle_last_cycle: 58,
+        matrix_first_cycle: 15,
+        matrix_last_cycle: 54,
+        row_counter_update_cycle: 58,
+        refresh_first_cycle: 11,
+        refresh_last_cycle: 15,
+        video_counter_reload_cycle: 14,
+    },
+    light_pen: VicLightPenTiming {
+        horizontal_counter_granularity_pixels: 8,
+        horizontal_origin_pixels: 0x19c,
+        horizontal_position_modulo_pixels: 520,
+        mos6569r3_register_offset: 2,
+        trigger_delay_cycles: 1,
+    },
+    raster_line_count: 263,
+    sprite: VicSpriteTiming {
+        ba_cycle_count: 5,
+        ba_first_cycle: 56,
+        bytes_per_row: 3,
+        data_first_cycle: 59,
+        dma_check_cycles: [56, 57],
+        expansion_check_cycle: 56,
+        line_data_ready_cycle: 10,
+        memory_counter_crunch_cycle: 15,
+        memory_counter_update_cycle: 16,
+        prepare_display_cycle: 59,
         start_cycle_spacing: 2,
     },
 };

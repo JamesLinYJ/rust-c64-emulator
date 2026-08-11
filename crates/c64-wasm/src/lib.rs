@@ -19,7 +19,7 @@
 use c64_core::devices::drive1541::mechanism::Drive1541DiskImage;
 use c64_core::devices::reu::{RamExpansionUnit, ReuSize};
 use c64_core::devices::sid::DEFAULT_SAMPLE_RATE_HZ;
-use c64_core::devices::vic::{PAL_RASTER_OUTPUT_HEIGHT, VIC_RASTER_OUTPUT_WIDTH};
+use c64_core::devices::vic::VIC_RASTER_OUTPUT_WIDTH;
 use c64_core::media::tap::TapVideoStandard;
 use c64_core::{
     C64Core, C64Firmware, CoreConfig, CoreError, MachineProfile, MemoryWriteSource, PacingMode,
@@ -128,7 +128,20 @@ impl C64Vm {
     }
 
     pub fn frame_height(&self) -> u32 {
-        u32::try_from(PAL_RASTER_OUTPUT_HEIGHT).unwrap_or(u32::MAX)
+        u32::try_from(self.core.devices().vic().frame_height()).unwrap_or(u32::MAX)
+    }
+
+    pub fn video_standard(&self) -> u8 {
+        self.core.config().video_standard.code()
+    }
+
+    pub fn processor_clock_hz(&self) -> u32 {
+        self.core.config().video_standard.system_clock_hz()
+    }
+
+    pub fn video_frame_cycles(&self) -> u32 {
+        let timing = self.core.devices().vic().timing();
+        u32::from(timing.cycles_per_raster_line) * u32::from(timing.raster_line_count)
     }
 
     pub fn frame_pixels_ptr(&self) -> usize {

@@ -193,6 +193,10 @@ impl VicFetchPipeline {
         }
     }
 
+    pub const fn timing(&self) -> VicTiming {
+        self.timing
+    }
+
     pub const fn phi1_data_bus_value(&self) -> u8 {
         self.last_phi1_byte
     }

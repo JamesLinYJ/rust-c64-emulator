@@ -11,12 +11,13 @@
 use core::fmt;
 
 use super::{
-    C64_PALETTE, PAL_CYCLES_PER_RASTER_LINE, PAL_FIRST_VISIBLE_RASTER,
-    PAL_LAST_VISIBLE_RASTER_EXCLUSIVE, PAL_RASTER_OUTPUT_HEIGHT, PAL_VIC_TIMING, SPRITE_COUNT,
-    VIC_RASTER_OUTPUT_WIDTH, VicBorderController, VicBorderSignals, VicCycleResult,
-    VicCycleSequencer, VicCycleSignals, VicFetchError, VicFetchPipeline, VicFetchRegisters,
-    VicFetchSnapshot, VicMemoryBus, VicPixelError, VicPixelModes, VicPixelPipeline,
-    VicPixelRegisters, VicSprite,
+    C64_PALETTE, NTSC_FIRST_VISIBLE_RASTER, NTSC_LAST_VISIBLE_RASTER_EXCLUSIVE,
+    NTSC_RASTER_OUTPUT_HEIGHT, NTSC_VIC_TIMING, PAL_CYCLES_PER_RASTER_LINE,
+    PAL_FIRST_VISIBLE_RASTER, PAL_LAST_VISIBLE_RASTER_EXCLUSIVE, PAL_RASTER_OUTPUT_HEIGHT,
+    PAL_VIC_TIMING, SPRITE_COUNT, VIC_RASTER_OUTPUT_WIDTH, VicBorderController, VicBorderSignals,
+    VicCycleResult, VicCycleSequencer, VicCycleSignals, VicFetchError, VicFetchPipeline,
+    VicFetchRegisters, VicFetchSnapshot, VicMemoryBus, VicPixelError, VicPixelModes,
+    VicPixelPipeline, VicPixelRegisters, VicSprite, VicTiming,
 };
 
 pub const VIC_REGISTER_COUNT: usize = 0x40;
@@ -69,6 +70,7 @@ const LIGHT_PEN_LATCHED: u8 = 1 << 0;
 const LIGHT_PEN_INPUT_HIGH: u8 = 1 << 1;
 const STANDARD_COLUMN_MODE: u8 = 1 << 0;
 const STANDARD_ROW_MODE: u8 = 1 << 1;
+#[cfg(test)]
 const PAL_FRAME_PIXEL_COUNT: usize = VIC_RASTER_OUTPUT_WIDTH * PAL_RASTER_OUTPUT_HEIGHT;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -116,7 +118,7 @@ impl From<VicPixelError> for VicError {
     }
 }
 
-/// PAL MOS 6569R3。寄存器、半周期取数、边框、像素和碰撞在同一芯片时钟提交。
+/// MOS 6569R3/6567R8。寄存器、半周期取数、边框、像素和碰撞在同一芯片时钟提交。
 #[derive(Clone, Debug, Eq, PartialEq, wincode::SchemaRead, wincode::SchemaWrite)]
 pub struct VicII {
     registers: [u8; VIC_REGISTER_COUNT],
@@ -153,14 +155,18 @@ impl Default for VicII {
 
 impl VicII {
     pub fn new() -> Self {
+        Self::new_with_timing(PAL_VIC_TIMING)
+    }
+
+    pub fn new_with_timing(timing: VicTiming) -> Self {
         let mut result = Self {
             registers: [0; VIC_REGISTER_COUNT],
-            cycle_sequencer: VicCycleSequencer::new(),
-            border_controller: VicBorderController::default(),
-            fetch_pipeline: VicFetchPipeline::default(),
-            pixel_pipeline: VicPixelPipeline::default(),
+            cycle_sequencer: VicCycleSequencer::new_with_timing(timing),
+            border_controller: VicBorderController::new(timing),
+            fetch_pipeline: VicFetchPipeline::new(timing),
+            pixel_pipeline: VicPixelPipeline::new(timing),
             pixel_registers: VicPixelRegisters::default(),
-            frame_pixels: vec![C64_PALETTE[0]; PAL_FRAME_PIXEL_COUNT].into_boxed_slice(),
+            frame_pixels: vec![C64_PALETTE[0]; frame_pixel_count(timing)].into_boxed_slice(),
             frame_generation: 0,
             line_border_colors: [C64_PALETTE[0]; PAL_CYCLES_PER_RASTER_LINE as usize],
             line_border_pixel_masks: [u8::MAX; PAL_CYCLES_PER_RASTER_LINE as usize],
@@ -181,6 +187,24 @@ impl VicII {
         };
         result.reset();
         result
+    }
+
+    pub const fn timing(&self) -> VicTiming {
+        self.cycle_sequencer.timing()
+    }
+
+    pub fn frame_height(&self) -> usize {
+        raster_output_height(self.timing())
+    }
+
+    pub(crate) fn state_matches_timing(&self, timing: VicTiming) -> bool {
+        self.cycle_sequencer.timing() == timing
+            && self.border_controller.timing() == timing
+            && self.fetch_pipeline.timing() == timing
+            && self.pixel_pipeline.timing() == timing
+            && self.current_raster_cycle() <= timing.cycles_per_raster_line
+            && self.current_raster_line() < timing.raster_line_count
+            && self.frame_pixels.len() == frame_pixel_count(timing)
     }
 
     pub const fn ba_low(&self) -> bool {
@@ -223,7 +247,7 @@ impl VicII {
         self.pixel_pipeline.pixels()
     }
 
-    /// 最近一个已完成或正在生成的 PAL 可见帧。每条扫描线仅在完整提交后替换。
+    /// 最近一个已完成或正在生成的可见帧。每条扫描线仅在完整提交后替换。
     pub fn frame_pixels(&self) -> &[u32] {
         &self.frame_pixels
     }
@@ -285,8 +309,13 @@ impl VicII {
             row_select: self.standard_row_mode(),
         });
         let cycle_index = usize::from(cycle.cycle - 1);
-        self.line_border_pixel_masks[cycle_index] = border_pixel_mask;
-        self.line_border_colors[cycle_index] = self.pixel_registers.border_color;
+        if let (Some(mask), Some(color)) = (
+            self.line_border_pixel_masks.get_mut(cycle_index),
+            self.line_border_colors.get_mut(cycle_index),
+        ) {
+            *mask = border_pixel_mask;
+            *color = self.pixel_registers.border_color;
+        }
         let collisions = self.pixel_pipeline.clock_cycle(
             &cycle,
             border_pixel_mask,
@@ -301,7 +330,7 @@ impl VicII {
             self.set_light_pen_flag(LIGHT_PEN_LATCHED, false);
             if !self.light_pen_flag(LIGHT_PEN_INPUT_HIGH) {
                 self.light_pen_trigger_cycles_remaining =
-                    PAL_VIC_TIMING.light_pen.trigger_delay_cycles;
+                    self.timing().light_pen.trigger_delay_cycles;
             }
         }
         self.clock_light_pen_trigger(cycle.cycle, cycle.raster_line);
@@ -332,7 +361,7 @@ impl VicII {
         self.light_pen_trigger_cycles_remaining = if light_pen_input_high {
             0
         } else {
-            PAL_VIC_TIMING.light_pen.trigger_delay_cycles
+            self.timing().light_pen.trigger_delay_cycles
         };
         self.raster_interrupt_matched = false;
         self.cycle_sequencer.reset();
@@ -449,7 +478,7 @@ impl VicII {
         }
         self.set_light_pen_flag(LIGHT_PEN_INPUT_HIGH, high);
         if !high {
-            self.light_pen_trigger_cycles_remaining = PAL_VIC_TIMING.light_pen.trigger_delay_cycles;
+            self.light_pen_trigger_cycles_remaining = self.timing().light_pen.trigger_delay_cycles;
         }
     }
 
@@ -470,7 +499,8 @@ impl VicII {
         colors: &mut [u32],
         masks: &mut [u8],
     ) -> Result<(), VicError> {
-        let required = PAL_CYCLES_PER_RASTER_LINE as usize;
+        let required = usize::from(self.timing().cycles_per_raster_line)
+            .min(PAL_CYCLES_PER_RASTER_LINE as usize);
         if colors.len() < required {
             return Err(VicError::RasterTargetTooSmall {
                 available: colors.len(),
@@ -495,14 +525,16 @@ impl VicII {
         let Some(raster_line) = completed_raster_line else {
             return Ok(());
         };
-        if (PAL_FIRST_VISIBLE_RASTER..PAL_LAST_VISIBLE_RASTER_EXCLUSIVE).contains(&raster_line) {
-            let visible_line = usize::from(raster_line - PAL_FIRST_VISIBLE_RASTER);
+        let timing = self.timing();
+        let (first_visible_raster, last_visible_raster_exclusive) = visible_raster_range(timing);
+        if (first_visible_raster..last_visible_raster_exclusive).contains(&raster_line) {
+            let visible_line = usize::from(raster_line - first_visible_raster);
             self.pixel_pipeline.copy_pixels_to(
                 &mut self.frame_pixels,
                 visible_line * VIC_RASTER_OUTPUT_WIDTH,
             )?;
         }
-        if raster_line + 1 == PAL_VIC_TIMING.raster_line_count {
+        if raster_line + 1 == timing.raster_line_count {
             self.frame_generation = self.frame_generation.wrapping_add(1);
         }
         Ok(())
@@ -632,7 +664,7 @@ impl VicII {
         if self.light_pen_trigger_cycles_remaining != 0 || self.light_pen_flag(LIGHT_PEN_LATCHED) {
             return;
         }
-        let timing = PAL_VIC_TIMING.light_pen;
+        let timing = self.timing().light_pen;
         let horizontal_pixels = (timing.horizontal_origin_pixels + u16::from(raster_cycle - 1) * 8)
             % timing.horizontal_position_modulo_pixels;
         let horizontal_counter_pixels =
@@ -690,6 +722,29 @@ impl VicII {
             self.border_mode_flags &= !flag;
         }
     }
+}
+
+fn visible_raster_range(timing: VicTiming) -> (u16, u16) {
+    if timing == NTSC_VIC_TIMING {
+        (
+            NTSC_FIRST_VISIBLE_RASTER,
+            NTSC_LAST_VISIBLE_RASTER_EXCLUSIVE,
+        )
+    } else {
+        (PAL_FIRST_VISIBLE_RASTER, PAL_LAST_VISIBLE_RASTER_EXCLUSIVE)
+    }
+}
+
+fn raster_output_height(timing: VicTiming) -> usize {
+    if timing == NTSC_VIC_TIMING {
+        NTSC_RASTER_OUTPUT_HEIGHT
+    } else {
+        PAL_RASTER_OUTPUT_HEIGHT
+    }
+}
+
+fn frame_pixel_count(timing: VicTiming) -> usize {
+    VIC_RASTER_OUTPUT_WIDTH * raster_output_height(timing)
 }
 
 #[cfg(test)]

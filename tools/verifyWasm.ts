@@ -68,6 +68,7 @@ interface C64VmInstance {
   memory_generation_low(): number;
   mount_drive1541_d64(bytes: Uint8Array, writeProtected: boolean): void;
   mount_drive1541_g64(bytes: Uint8Array, writeProtected: boolean): void;
+  processor_clock_hz(): number;
   insert_blank_tap(videoStandard: number): void;
   install_basic_prg(bytes: Uint8Array): void;
   insert_crt(bytes: Uint8Array, easyFlashJumperInstalled: boolean): void;
@@ -101,6 +102,8 @@ interface C64VmInstance {
   tape_stop(): void;
   tape_transport(): number;
   tape_writable(): boolean;
+  video_frame_cycles(): number;
+  video_standard(): number;
   write_base_ram(address: number, value: number): void;
 }
 
@@ -148,6 +151,7 @@ production.free();
 
 const source = new loadedModule.C64Vm(0, 0);
 const restored = new loadedModule.C64Vm(0, 0);
+const ntsc = new loadedModule.C64Vm(0, 1);
 try {
   assert.equal(source.effective_slots_per_system_cycle(), 1);
   source.set_manual_turbo(20);
@@ -186,6 +190,9 @@ try {
   assert.equal(source.frame_width(), 403);
   assert.equal(source.frame_height(), 284);
   assert.equal(source.frame_pixels_len(), 403 * 284);
+  assert.equal(source.video_standard(), 0);
+  assert.equal(source.processor_clock_hz(), 985_248);
+  assert.equal(source.video_frame_cycles(), 63 * 312);
   assert.equal(source.audio_sample_rate_hz(), 44_100);
   assert.ok(source.audio_sample_count() > 0);
   assert.ok(source.frame_pixels_ptr() > 0);
@@ -356,13 +363,22 @@ try {
   restored.lock_auto_turbo(8);
   assert.equal(restored.awaiting_auto_calibration(), false);
   assert.equal(restored.effective_slots_per_system_cycle(), 8);
+
+  assert.equal(ntsc.frame_width(), 403);
+  assert.equal(ntsc.frame_height(), 247);
+  assert.equal(ntsc.frame_pixels_len(), 403 * 247);
+  assert.equal(ntsc.video_standard(), 1);
+  assert.equal(ntsc.processor_clock_hz(), 1_022_727);
+  assert.equal(ntsc.video_frame_cycles(), 65 * 263);
+  assert.equal(ntsc.run_until_next_frame(), 65 * 263);
 } finally {
   source.free();
   restored.free();
+  ntsc.free();
 }
 
 console.log(
-  'Wasm ABI 安全验证通过：边界输入、完整状态原子性、Cartridge/EasyFlash、REU、Tape、1541、诊断、Turbo 与 64 KiB RAM 均符合契约。',
+  'Wasm ABI 安全验证通过：PAL/NTSC、边界输入、完整状态原子性、Cartridge/EasyFlash、REU、Tape、1541、诊断、Turbo 与 64 KiB RAM 均符合契约。',
 );
 
 function assertC64WasmModule(value: unknown): asserts value is C64WasmModule {

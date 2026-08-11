@@ -26,7 +26,7 @@ use super::sid::{
     DEFAULT_SAMPLE_RATE_HZ, NTSC_PROCESSOR_CLOCK_HZ, PAL_PROCESSOR_CLOCK_HZ, Sid, SidModel,
 };
 use super::tape::{Commodore1530Datasette, DatasetteError, DatasetteHostSignals};
-use super::vic::{VicError, VicII, VicMemoryBus};
+use super::vic::{NTSC_VIC_TIMING, PAL_VIC_TIMING, VicError, VicII, VicMemoryBus};
 
 const CIA1_PORT_B_LIGHT_PEN_INPUT: u8 = 1 << 4;
 const PROCESSOR_PORT_CASSETTE_WRITE: u8 = 1 << 3;
@@ -151,9 +151,13 @@ impl C64Chipset {
     }
 
     pub fn new_with_sid_model(video_standard: VideoStandard, sid_model: SidModel) -> Self {
-        let timing = match video_standard {
+        let cia_timing = match video_standard {
             VideoStandard::Pal => Mos6526Timing::PAL,
             VideoStandard::Ntsc => Mos6526Timing::NTSC,
+        };
+        let vic_timing = match video_standard {
+            VideoStandard::Pal => PAL_VIC_TIMING,
+            VideoStandard::Ntsc => NTSC_VIC_TIMING,
         };
         let sid_clock_hz = match video_standard {
             VideoStandard::Pal => PAL_PROCESSOR_CLOCK_HZ,
@@ -162,9 +166,9 @@ impl C64Chipset {
         let (iec_bus, iec_host_port) = IecBus::new_with_attached_port();
         Self {
             video_standard,
-            irq_cia: Mos6526::new_with_valid_timing(Mos6526Model::Original, timing),
-            nmi_cia: Mos6526::new_with_valid_timing(Mos6526Model::Original, timing),
-            vic: VicII::new(),
+            irq_cia: Mos6526::new_with_valid_timing(Mos6526Model::Original, cia_timing),
+            nmi_cia: Mos6526::new_with_valid_timing(Mos6526Model::Original, cia_timing),
+            vic: VicII::new_with_timing(vic_timing),
             sid: Sid::new_with_valid_rates(sid_model, sid_clock_hz, DEFAULT_SAMPLE_RATE_HZ),
             iec_bus,
             iec_host_port,
@@ -312,7 +316,12 @@ impl C64Chipset {
         video_standard: VideoStandard,
         sid_model: SidModel,
     ) -> bool {
+        let vic_timing = match video_standard {
+            VideoStandard::Pal => PAL_VIC_TIMING,
+            VideoStandard::Ntsc => NTSC_VIC_TIMING,
+        };
         self.video_standard == video_standard
+            && self.vic.state_matches_timing(vic_timing)
             && self.sid.model() == sid_model
             && self.sid.processor_clock_hz() == video_standard.system_clock_hz()
             && self.sid.state_is_valid()

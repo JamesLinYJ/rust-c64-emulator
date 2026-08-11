@@ -1,6 +1,7 @@
 import { Maximize2, Minimize2, Moon, Sun } from 'lucide-react';
 
 import type { EmulatorPhase } from '../useC64Emulator';
+import { C64_VIDEO_STANDARDS, type C64VideoStandard } from '../../video/C64VideoStandard';
 
 interface AppHeaderProps {
   readonly darkTheme: boolean;
@@ -8,6 +9,7 @@ interface AppHeaderProps {
   readonly onToggleFullscreen: () => void;
   readonly onToggleTheme: () => void;
   readonly phase: EmulatorPhase;
+  readonly videoStandard: C64VideoStandard;
 }
 
 const PHASE_LABELS: Readonly<Record<EmulatorPhase, string>> = {
@@ -23,13 +25,15 @@ export function AppHeader({
   onToggleFullscreen,
   onToggleTheme,
   phase,
+  videoStandard,
 }: AppHeaderProps) {
+  const video = C64_VIDEO_STANDARDS[videoStandard];
   return (
     <header className="app-header">
       <div className="app-header__inner">
         <a className="app-title" href="#console" aria-label="返回运行控制台">
           <strong>RetroC64</strong>
-          <span>PAL · Rust/Wasm Worker 模拟器</span>
+          <span>{video.label} · Rust/Wasm Worker 模拟器</span>
         </a>
 
         <div className="header-actions">

@@ -20,11 +20,17 @@ mod sprite_dma;
 pub mod timing;
 
 pub const SPRITE_COUNT: u8 = 8;
+pub const MAX_CYCLES_PER_RASTER_LINE: u8 = 65;
 pub const PAL_CYCLES_PER_RASTER_LINE: u8 = 63;
 pub const PAL_FIRST_VISIBLE_RASTER: u16 = 16;
 pub const PAL_LAST_VISIBLE_RASTER_EXCLUSIVE: u16 = 300;
 pub const PAL_RASTER_OUTPUT_HEIGHT: usize =
     (PAL_LAST_VISIBLE_RASTER_EXCLUSIVE - PAL_FIRST_VISIBLE_RASTER) as usize;
+pub const NTSC_CYCLES_PER_RASTER_LINE: u8 = 65;
+pub const NTSC_FIRST_VISIBLE_RASTER: u16 = 8;
+pub const NTSC_LAST_VISIBLE_RASTER_EXCLUSIVE: u16 = 255;
+pub const NTSC_RASTER_OUTPUT_HEIGHT: usize =
+    (NTSC_LAST_VISIBLE_RASTER_EXCLUSIVE - NTSC_FIRST_VISIBLE_RASTER) as usize;
 
 pub use bad_line::{
     VicBadLineController, VicBadLineCycle, VicBadLineSignals, VicMatrixAccess,
@@ -45,4 +51,4 @@ pub use pixel::{
 };
 pub use sequencer::{VicCycleResult, VicCycleSequencer, VicCycleSignals};
 pub use sprite::VicSprite;
-pub use timing::{PAL_VIC_TIMING, VicTiming};
+pub use timing::{NTSC_VIC_TIMING, PAL_VIC_TIMING, VicTiming};

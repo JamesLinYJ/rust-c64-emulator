@@ -21,6 +21,7 @@ import type {
   C64WorkerProgramLoadedEvent,
   C64WorkerState,
 } from './C64WasmWorkerProtocol';
+import { frameDurationMs } from '../video/C64VideoStandard';
 
 interface C64WasmVmConstructor {
   withFirmware(
@@ -50,7 +51,6 @@ interface WorkerScope {
   postMessage(message: C64WorkerEvent, transfer: Transferable[]): void;
 }
 
-const FRAME_DURATION_MS = 1000 / 50.124_542;
 const MAXIMUM_CATCH_UP_FRAMES = 3;
 const BASIC_BOOT_FRAME_LIMIT = 300;
 const AUDIO_BUFFER_SAMPLE_CAPACITY = 2_048;
@@ -65,6 +65,7 @@ let audioBuffers: TransferableBufferPool | undefined;
 let width = 0;
 let height = 0;
 let sampleRate = 0;
+let scheduledFrameDurationMs = 0;
 let state: C64WorkerState = 'paused';
 let timer: number | undefined;
 let nextFrameDeadline = 0;
@@ -130,7 +131,7 @@ async function initialize(command: Extract<C64WorkerCommand, { readonly type: 'i
     const initialized = await imported.default();
     const nextVm = imported.C64Vm.withFirmware(
       0,
-      0,
+      command.videoStandard,
       new Uint8Array(command.firmware.basic),
       new Uint8Array(command.firmware.character),
       new Uint8Array(command.firmware.kernal),
@@ -143,6 +144,18 @@ async function initialize(command: Extract<C64WorkerCommand, { readonly type: 'i
     width = nextVm.frame_width();
     height = nextVm.frame_height();
     sampleRate = nextVm.audio_sample_rate_hz();
+    const processorClockHz = nextVm.processor_clock_hz();
+    const videoFrameCycles = nextVm.video_frame_cycles();
+    const videoStandard = nextVm.video_standard();
+    if (videoStandard !== 0 && videoStandard !== 1) {
+      throw new Error(`Rust/Wasm returned invalid video standard ${videoStandard}.`);
+    }
+    if (videoStandard !== command.videoStandard) {
+      throw new Error(
+        `Rust/Wasm initialized video standard ${videoStandard}; expected ${command.videoStandard}.`,
+      );
+    }
+    scheduledFrameDurationMs = frameDurationMs(processorClockHz, videoFrameCycles);
     const frameByteLength = width * height * Uint32Array.BYTES_PER_ELEMENT;
     frameBuffers = new TransferableBufferPool(frameByteLength, DOUBLE_BUFFER_CAPACITY);
     audioBuffers = new TransferableBufferPool(
@@ -152,9 +165,12 @@ async function initialize(command: Extract<C64WorkerCommand, { readonly type: 'i
     post(
       {
         height,
+        processorClockHz,
         requestId: command.requestId,
         sampleRate,
         type: 'initialized',
+        videoFrameCycles,
+        videoStandard,
         width,
       },
       [],
@@ -193,9 +209,9 @@ function runScheduledFrame(): void {
     return;
   }
 
-  nextFrameDeadline += FRAME_DURATION_MS;
+  nextFrameDeadline += scheduledFrameDurationMs;
   const now = performance.now();
-  if (now - nextFrameDeadline > FRAME_DURATION_MS * MAXIMUM_CATCH_UP_FRAMES) {
+  if (now - nextFrameDeadline > scheduledFrameDurationMs * MAXIMUM_CATCH_UP_FRAMES) {
     nextFrameDeadline = now;
   }
   scheduleFrame(Math.max(0, nextFrameDeadline - now));
@@ -284,7 +300,7 @@ async function loadProgram(
       }
       if (!ready || !readyWasAbsent) {
         throw new Error(
-          `C64 BASIC did not reach READY within ${BASIC_BOOT_FRAME_LIMIT} PAL frames.`,
+          `C64 BASIC did not reach READY within ${BASIC_BOOT_FRAME_LIMIT} video frames.`,
         );
       }
     } else if (!nextVm.basic_ready()) {
