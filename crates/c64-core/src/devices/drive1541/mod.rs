@@ -9,6 +9,7 @@
 // --------------------------------------------------------------------------
 
 pub mod d64_gcr;
+pub mod disk_via;
 pub mod gcr;
 pub mod iec_via;
 pub mod mechanism;
