@@ -8,8 +8,11 @@
 //   作者:       OpenAI Codex
 // --------------------------------------------------------------------------
 
+use c64_core::devices::drive1541::mechanism::Drive1541DiskImage;
+use c64_core::devices::drive1541::memory::DRIVE_1541_ROM_SIZE;
 use c64_core::devices::input::{C64_CONTROL_PORT_DIGITAL_MASK, RESTORE_NMI_PULSE_CYCLES};
 use c64_core::devices::{C64Chipset, vic};
+use c64_core::media::d64::{D64_SECTOR_SIZE, d64_sector_count_through_track};
 use c64_core::media::prg::BASIC_PRG_LOAD_ADDRESS;
 use c64_core::{
     C64BusDevices, C64Core, MemoryWriteSource, VideoStandard,
@@ -152,6 +155,25 @@ fn basic_ready_is_detected_from_the_physical_screen_ram() {
         );
     }
     assert!(core.basic_ready());
+}
+
+#[test]
+fn coarse_drive_media_calls_parse_mount_and_export_without_exposing_the_mechanism() {
+    let mut core = C64Core::default();
+    core.attach_drive1541(8, &[0; DRIVE_1541_ROM_SIZE]).unwrap();
+    let sector_count = d64_sector_count_through_track(35).unwrap();
+    let d64 = vec![0x5a; sector_count * D64_SECTOR_SIZE];
+
+    core.mount_drive1541_d64(&d64, true).unwrap();
+    assert!(core.drive1541_disk_mounted());
+    assert!(core.drive1541_disk_write_protected());
+
+    let ejected = core.eject_drive1541_disk().unwrap();
+    let Drive1541DiskImage::D64(image) = ejected else {
+        panic!("D64 mount must eject as D64");
+    };
+    assert_eq!(image.to_bytes(false), d64);
+    assert!(!core.drive1541_disk_mounted());
 }
 
 fn write_word(core: &mut C64Core, address: u16, value: u16) {

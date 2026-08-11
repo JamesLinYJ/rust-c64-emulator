@@ -21,6 +21,7 @@ use crate::{
     devices::{
         C64Chipset, C64ChipsetError,
         cartridge::{Cartridge, CartridgeKind},
+        drive1541::mechanism::Drive1541DiskImage,
         reu::{RamExpansionUnit, ReuDmaOperation, ReuSize},
         tape::{DatasetteError, DatasetteTape, DatasetteTransport},
         vic::VicError,
@@ -396,6 +397,69 @@ impl C64Core {
         self.clock.advance_system_cycles(0)?;
         self.devices.detach_drive1541()?;
         Ok(())
+    }
+
+    pub const fn drive1541_attached(&self) -> bool {
+        self.devices.drive1541().is_some()
+    }
+
+    pub fn drive1541_disk_mounted(&self) -> bool {
+        self.devices
+            .drive1541()
+            .is_some_and(|drive| drive.machine().mechanism().disk_present())
+    }
+
+    pub fn drive1541_disk_write_protected(&self) -> bool {
+        self.devices
+            .drive1541()
+            .is_none_or(|drive| drive.machine().mechanism().write_protected())
+    }
+
+    /// Parse and mount one D64 at a system-cycle boundary.
+    ///
+    /// # Errors
+    ///
+    /// Rejects an internal CPU slot, an empty drive, malformed media or an
+    /// occupied mechanism.
+    pub fn mount_drive1541_d64(
+        &mut self,
+        bytes: &[u8],
+        write_protected: bool,
+    ) -> Result<(), CoreError> {
+        self.drive1541_mut()?
+            .mount_d64(bytes, write_protected)
+            .map_err(C64ChipsetError::from)?;
+        Ok(())
+    }
+
+    /// Parse and mount one G64 at a system-cycle boundary.
+    ///
+    /// # Errors
+    ///
+    /// Rejects an internal CPU slot, an empty drive, malformed media or an
+    /// occupied mechanism.
+    pub fn mount_drive1541_g64(
+        &mut self,
+        bytes: &[u8],
+        write_protected: bool,
+    ) -> Result<(), CoreError> {
+        self.drive1541_mut()?
+            .mount_g64(bytes, write_protected)
+            .map_err(C64ChipsetError::from)?;
+        Ok(())
+    }
+
+    /// Eject and return one drive image at a system-cycle boundary.
+    ///
+    /// # Errors
+    ///
+    /// Rejects an internal CPU slot, an empty drive/mechanism, and D64 media
+    /// with uncommitted raw-track writes.
+    pub fn eject_drive1541_disk(&mut self) -> Result<Drive1541DiskImage, CoreError> {
+        self.drive1541_mut()?
+            .eject_disk()
+            .map_err(C64ChipsetError::from)
+            .map_err(CoreError::from)
     }
 
     /// Borrow the attached drive mutably at a system-cycle boundary for coarse

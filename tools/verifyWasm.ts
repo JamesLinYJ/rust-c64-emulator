@@ -16,6 +16,7 @@ interface C64VmInstance {
   audio_sample_count(): number;
   audio_sample_rate_hz(): number;
   audio_samples_ptr(): number;
+  attach_drive1541(deviceNumber: number, rom: Uint8Array): void;
   attach_reu(sizeKib: number): void;
   attach_reu_image(sizeKib: number, image: Uint8Array): void;
   awaiting_auto_calibration(): boolean;
@@ -23,9 +24,32 @@ interface C64VmInstance {
   cartridge_attached(): boolean;
   cartridge_kind(): number;
   current_slot(): number;
+  detach_drive1541(): void;
+  diagnostics_cpu_bus_transactions_high(): number;
+  diagnostics_cpu_bus_transactions_low(): number;
+  diagnostics_elapsed_system_cycles_high(): number;
+  diagnostics_elapsed_system_cycles_low(): number;
+  diagnostics_execution_mode_changes_high(): number;
+  diagnostics_execution_mode_changes_low(): number;
+  diagnostics_held_cpu_read_system_cycles_high(): number;
+  diagnostics_held_cpu_read_system_cycles_low(): number;
+  diagnostics_retired_cpu_slots_high(): number;
+  diagnostics_retired_cpu_slots_low(): number;
+  diagnostics_reu_dma_bus_cycles_high(): number;
+  diagnostics_reu_dma_bus_cycles_low(): number;
+  diagnostics_reu_dma_system_cycles_high(): number;
+  diagnostics_reu_dma_system_cycles_low(): number;
+  diagnostics_reu_dma_vic_stall_cycles_high(): number;
+  diagnostics_reu_dma_vic_stall_cycles_low(): number;
+  diagnostics_state_loads_high(): number;
+  diagnostics_state_loads_low(): number;
+  drive1541_attached(): boolean;
+  drive1541_disk_mounted(): boolean;
+  drive1541_disk_write_protected(): boolean;
   effective_slots_per_system_cycle(): number;
   easyflash_dirty(): boolean;
   eject_cartridge(): void;
+  eject_drive1541_disk(): Uint8Array;
   detach_reu(): Uint8Array;
   eject_tap(): Uint8Array;
   elapsed_system_cycles_high(): number;
@@ -42,6 +66,8 @@ interface C64VmInstance {
   load_state(bytes: Uint8Array): void;
   lock_auto_turbo(resolvedSlotsPerSystemCycle: number): void;
   memory_generation_low(): number;
+  mount_drive1541_d64(bytes: Uint8Array, writeProtected: boolean): void;
+  mount_drive1541_g64(bytes: Uint8Array, writeProtected: boolean): void;
   insert_blank_tap(videoStandard: number): void;
   install_basic_prg(bytes: Uint8Array): void;
   insert_crt(bytes: Uint8Array, easyFlashJumperInstalled: boolean): void;
@@ -129,6 +155,20 @@ try {
   assert.equal(source.elapsed_system_cycles_low(), 2);
   assert.equal(source.elapsed_system_cycles_high(), 0);
   assert.equal(source.current_slot(), 0);
+  assert.equal(source.diagnostics_retired_cpu_slots_low(), 40);
+  assert.equal(source.diagnostics_retired_cpu_slots_high(), 0);
+  assert.equal(source.diagnostics_elapsed_system_cycles_low(), 2);
+  assert.equal(source.diagnostics_elapsed_system_cycles_high(), 0);
+  assert.ok(source.diagnostics_cpu_bus_transactions_low() > 0);
+  assert.equal(source.diagnostics_cpu_bus_transactions_high(), 0);
+  assert.equal(source.diagnostics_held_cpu_read_system_cycles_high(), 0);
+  assert.equal(source.diagnostics_reu_dma_system_cycles_high(), 0);
+  assert.equal(source.diagnostics_reu_dma_vic_stall_cycles_high(), 0);
+  assert.equal(source.diagnostics_reu_dma_bus_cycles_high(), 0);
+  assert.ok(source.diagnostics_execution_mode_changes_low() > 0);
+  assert.equal(source.diagnostics_execution_mode_changes_high(), 0);
+  assert.equal(source.diagnostics_state_loads_low(), 0);
+  assert.equal(source.diagnostics_state_loads_high(), 0);
 
   assert.throws(
     () => source.set_host_input(new Uint8Array(7), false, 0, 0, false),
@@ -246,6 +286,28 @@ try {
   assert.equal(blankTap[12], 1);
   assert.equal(blankTap[14], 0);
 
+  const driveRom = new Uint8Array(0x4000);
+  const d64 = new Uint8Array(174_848);
+  const g64 = createEmptyG64();
+  assert.equal(source.drive1541_attached(), false);
+  assert.throws(() => source.attach_drive1541(8, driveRom.subarray(1)), /16384/u);
+  source.attach_drive1541(8, driveRom);
+  assert.equal(source.drive1541_attached(), true);
+  assert.equal(source.drive1541_disk_mounted(), false);
+  assert.throws(() => source.mount_drive1541_d64(Uint8Array.of(0), false), /D64/u);
+  source.mount_drive1541_d64(d64, true);
+  assert.equal(source.drive1541_disk_mounted(), true);
+  assert.equal(source.drive1541_disk_write_protected(), true);
+  const exportedD64 = source.eject_drive1541_disk();
+  assert.equal(exportedD64[0], 0);
+  assert.deepEqual(exportedD64.subarray(1), d64);
+  source.mount_drive1541_g64(g64, false);
+  assert.equal(source.drive1541_disk_write_protected(), false);
+  const exportedG64 = source.eject_drive1541_disk();
+  assert.equal(exportedG64[0], 1);
+  assert.deepEqual(exportedG64.subarray(1), g64);
+  source.mount_drive1541_d64(d64, false);
+
   source.attach_reu_image(256, initializedReu);
   source.insert_tap(readOnlyTap, 0);
   source.tape_play();
@@ -274,7 +336,17 @@ try {
   assert.equal(restored.tape_mounted(), true);
   assert.equal(restored.tape_transport(), 1);
   assert.equal(restored.tape_pulse_index(), savedTapePulseIndex);
+  assert.equal(restored.drive1541_attached(), true);
+  assert.equal(restored.drive1541_disk_mounted(), true);
+  assert.equal(restored.drive1541_disk_write_protected(), false);
+  assert.equal(restored.diagnostics_state_loads_low(), 1);
+  assert.equal(restored.diagnostics_state_loads_high(), 0);
   assert.deepEqual(restored.save_state(), state);
+  const restoredD64 = restored.eject_drive1541_disk();
+  assert.equal(restoredD64[0], 0);
+  assert.deepEqual(restoredD64.subarray(1), d64);
+  restored.detach_drive1541();
+  assert.equal(restored.drive1541_attached(), false);
 
   restored.reset();
   assert.equal(restored.effective_slots_per_system_cycle(), 1);
@@ -290,7 +362,7 @@ try {
 }
 
 console.log(
-  'Wasm ABI 安全验证通过：边界输入、完整状态原子性、Cartridge/EasyFlash、REU、Tape、Turbo 与 64 KiB RAM 均符合契约。',
+  'Wasm ABI 安全验证通过：边界输入、完整状态原子性、Cartridge/EasyFlash、REU、Tape、1541、诊断、Turbo 与 64 KiB RAM 均符合契约。',
 );
 
 function assertC64WasmModule(value: unknown): asserts value is C64WasmModule {
@@ -312,6 +384,17 @@ function createTap(data: Uint8Array): Uint8Array {
   bytes[14] = 0;
   new DataView(bytes.buffer).setUint32(16, data.length, true);
   bytes.set(data, 20);
+  return bytes;
+}
+
+function createEmptyG64(): Uint8Array {
+  const halfTrackCount = 84;
+  const bytes = new Uint8Array(12 + halfTrackCount * 8);
+  writeAscii(bytes, 0, 'GCR-1541');
+  bytes[8] = 0;
+  bytes[9] = halfTrackCount;
+  bytes[10] = 16;
+  bytes[11] = 0;
   return bytes;
 }
 

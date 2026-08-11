@@ -12,6 +12,8 @@ use core::fmt;
 
 use crate::architecture::VideoStandard;
 use crate::devices::iec::IecBus;
+use crate::media::d64::D64DiskImage;
+use crate::media::g64::G64DiskImage;
 
 use super::clock::{Drive1541ClockError, Drive1541ClockSynchronizer};
 use super::disk_via::{Drive1541DiskVia, Drive1541DiskViaError};
@@ -150,6 +152,38 @@ impl Commodore1541Drive {
     pub fn mount_disk(&mut self, image: Drive1541DiskImage) -> Result<(), Commodore1541DriveError> {
         self.machine.mechanism_mut().mount_disk(image)?;
         Ok(())
+    }
+
+    /// Parse and mount one sector-based D64 image without exposing mechanism
+    /// ownership to the host runtime.
+    ///
+    /// # Errors
+    ///
+    /// Propagates D64 validation and occupied-mechanism errors.
+    pub fn mount_d64(
+        &mut self,
+        bytes: &[u8],
+        write_protected: bool,
+    ) -> Result<(), Commodore1541DriveError> {
+        let image =
+            D64DiskImage::parse(bytes, write_protected).map_err(Drive1541MechanismError::from)?;
+        self.mount_disk(Drive1541DiskImage::D64(image))
+    }
+
+    /// Parse and mount one raw G64 image without exposing mechanism ownership
+    /// to the host runtime.
+    ///
+    /// # Errors
+    ///
+    /// Propagates G64 validation and occupied-mechanism errors.
+    pub fn mount_g64(
+        &mut self,
+        bytes: &[u8],
+        write_protected: bool,
+    ) -> Result<(), Commodore1541DriveError> {
+        let image =
+            G64DiskImage::parse(bytes, write_protected).map_err(Drive1541MechanismError::from)?;
+        self.mount_disk(Drive1541DiskImage::G64(image))
     }
 
     /// Eject the mounted image without discarding uncommitted D64 writes.

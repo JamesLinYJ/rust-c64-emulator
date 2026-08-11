@@ -16,6 +16,7 @@
     allow(linker_messages)
 )]
 
+use c64_core::devices::drive1541::mechanism::Drive1541DiskImage;
 use c64_core::devices::reu::{RamExpansionUnit, ReuSize};
 use c64_core::devices::sid::DEFAULT_SAMPLE_RATE_HZ;
 use c64_core::devices::vic::{PAL_RASTER_OUTPUT_HEIGHT, VIC_RASTER_OUTPUT_WIDTH};
@@ -28,6 +29,8 @@ use wasm_bindgen::prelude::*;
 
 const MAXIMUM_FRAME_SYSTEM_CYCLES: u64 = 25_000;
 const AUDIO_BATCH_CAPACITY: usize = 2_048;
+const DRIVE_DISK_FORMAT_D64: u8 = 0;
+const DRIVE_DISK_FORMAT_G64: u8 = 1;
 
 #[wasm_bindgen]
 pub struct C64Vm {
@@ -298,6 +301,174 @@ impl C64Vm {
 
     pub fn memory_generation_low(&self) -> u32 {
         low_u32(self.core.memory().memory_generation())
+    }
+
+    pub fn diagnostics_retired_cpu_slots_low(&self) -> u32 {
+        low_u32(self.core.diagnostics().retired_cpu_slots)
+    }
+
+    pub fn diagnostics_retired_cpu_slots_high(&self) -> u32 {
+        high_u32(self.core.diagnostics().retired_cpu_slots)
+    }
+
+    pub fn diagnostics_elapsed_system_cycles_low(&self) -> u32 {
+        low_u32(self.core.diagnostics().elapsed_system_cycles)
+    }
+
+    pub fn diagnostics_elapsed_system_cycles_high(&self) -> u32 {
+        high_u32(self.core.diagnostics().elapsed_system_cycles)
+    }
+
+    pub fn diagnostics_held_cpu_read_system_cycles_low(&self) -> u32 {
+        low_u32(self.core.diagnostics().held_cpu_read_system_cycles)
+    }
+
+    pub fn diagnostics_held_cpu_read_system_cycles_high(&self) -> u32 {
+        high_u32(self.core.diagnostics().held_cpu_read_system_cycles)
+    }
+
+    pub fn diagnostics_reu_dma_system_cycles_low(&self) -> u32 {
+        low_u32(self.core.diagnostics().reu_dma_system_cycles)
+    }
+
+    pub fn diagnostics_reu_dma_system_cycles_high(&self) -> u32 {
+        high_u32(self.core.diagnostics().reu_dma_system_cycles)
+    }
+
+    pub fn diagnostics_reu_dma_vic_stall_cycles_low(&self) -> u32 {
+        low_u32(self.core.diagnostics().reu_dma_vic_stall_cycles)
+    }
+
+    pub fn diagnostics_reu_dma_vic_stall_cycles_high(&self) -> u32 {
+        high_u32(self.core.diagnostics().reu_dma_vic_stall_cycles)
+    }
+
+    pub fn diagnostics_reu_dma_bus_cycles_low(&self) -> u32 {
+        low_u32(self.core.diagnostics().reu_dma_bus_cycles)
+    }
+
+    pub fn diagnostics_reu_dma_bus_cycles_high(&self) -> u32 {
+        high_u32(self.core.diagnostics().reu_dma_bus_cycles)
+    }
+
+    pub fn diagnostics_cpu_bus_transactions_low(&self) -> u32 {
+        low_u32(self.core.diagnostics().cpu_bus_transactions)
+    }
+
+    pub fn diagnostics_cpu_bus_transactions_high(&self) -> u32 {
+        high_u32(self.core.diagnostics().cpu_bus_transactions)
+    }
+
+    pub fn diagnostics_execution_mode_changes_low(&self) -> u32 {
+        low_u32(self.core.diagnostics().execution_mode_changes)
+    }
+
+    pub fn diagnostics_execution_mode_changes_high(&self) -> u32 {
+        high_u32(self.core.diagnostics().execution_mode_changes)
+    }
+
+    pub fn diagnostics_state_loads_low(&self) -> u32 {
+        low_u32(self.core.diagnostics().state_loads)
+    }
+
+    pub fn diagnostics_state_loads_high(&self) -> u32 {
+        high_u32(self.core.diagnostics().state_loads)
+    }
+
+    /// Attach one 1541 using an explicit 16 KiB DOS ROM.
+    ///
+    /// # Errors
+    ///
+    /// Rejects an invalid device number or ROM, an occupied drive slot, and
+    /// IEC attachment errors.
+    pub fn attach_drive1541(&mut self, device_number: u8, rom: &[u8]) -> Result<(), JsError> {
+        self.core
+            .attach_drive1541(device_number, rom)
+            .map_err(to_js_error)
+    }
+
+    /// Detach the configured 1541.
+    ///
+    /// # Errors
+    ///
+    /// Rejects an empty drive slot or an internal CPU slot.
+    pub fn detach_drive1541(&mut self) -> Result<(), JsError> {
+        self.core.detach_drive1541().map_err(to_js_error)
+    }
+
+    pub fn drive1541_attached(&self) -> bool {
+        self.core.drive1541_attached()
+    }
+
+    pub fn drive1541_disk_mounted(&self) -> bool {
+        self.core.drive1541_disk_mounted()
+    }
+
+    pub fn drive1541_disk_write_protected(&self) -> bool {
+        self.core.drive1541_disk_write_protected()
+    }
+
+    /// Parse and mount one D64 in a single coarse call.
+    ///
+    /// # Errors
+    ///
+    /// Rejects malformed media, an empty drive or an occupied mechanism.
+    pub fn mount_drive1541_d64(
+        &mut self,
+        bytes: &[u8],
+        write_protected: bool,
+    ) -> Result<(), JsError> {
+        self.core
+            .mount_drive1541_d64(bytes, write_protected)
+            .map_err(to_js_error)
+    }
+
+    /// Parse and mount one G64 in a single coarse call.
+    ///
+    /// # Errors
+    ///
+    /// Rejects malformed media, an empty drive or an occupied mechanism.
+    pub fn mount_drive1541_g64(
+        &mut self,
+        bytes: &[u8],
+        write_protected: bool,
+    ) -> Result<(), JsError> {
+        self.core
+            .mount_drive1541_g64(bytes, write_protected)
+            .map_err(to_js_error)
+    }
+
+    /// Serialize and eject one D64/G64. Byte zero identifies D64 (`0`) or
+    /// G64 (`1`); all remaining bytes are the exact media image.
+    ///
+    /// # Errors
+    ///
+    /// Rejects an empty drive/mechanism, an invalid G64 export, or a D64 with
+    /// uncommitted raw-track writes. Failed serialization leaves media mounted.
+    pub fn eject_drive1541_disk(&mut self) -> Result<Vec<u8>, JsError> {
+        let (format, bytes) = match self
+            .core
+            .devices()
+            .drive1541()
+            .and_then(|drive| drive.machine().mechanism().mounted_disk())
+        {
+            Some(Drive1541DiskImage::D64(image)) => (
+                DRIVE_DISK_FORMAT_D64,
+                image.to_bytes(image.has_error_info()),
+            ),
+            Some(Drive1541DiskImage::G64(image)) => (
+                DRIVE_DISK_FORMAT_G64,
+                image
+                    .to_bytes()
+                    .map_err(|error| JsError::new(&error.to_string()))?,
+            ),
+            None => return Err(JsError::new("no 1541 disk is mounted")),
+        };
+        self.core.eject_drive1541_disk().map_err(to_js_error)?;
+        let mut result = Vec::with_capacity(bytes.len() + 1);
+        result.push(format);
+        result.extend_from_slice(&bytes);
+        Ok(result)
     }
 
     /// Parse and attach one CRT image in a single coarse ABI call.

@@ -29,10 +29,14 @@ import { BrowserC64Input } from './BrowserC64Input';
 import { fetchBinary, loadFirmware } from './FirmwareLoader';
 import type {
   C64WorkerCommand,
+  C64WorkerDiagnostics,
   C64WorkerEvent,
   C64WorkerFrameEvent,
   C64WorkerInitializedEvent,
+  C64WorkerOperation,
+  C64WorkerOperationResult,
   C64WorkerProgramLoadedEvent,
+  C64WorkerRequestCompletedEvent,
   C64WorkerRequestErrorEvent,
   C64WorkerState,
 } from './C64WasmWorkerProtocol';
@@ -60,9 +64,18 @@ interface WorkerPort {
 
 interface PendingRequest {
   readonly reject: (error: Error) => void;
-  readonly resolve: (event: C64WorkerInitializedEvent | C64WorkerProgramLoadedEvent) => void;
+  readonly resolve: (
+    event: C64WorkerInitializedEvent | C64WorkerProgramLoadedEvent | C64WorkerRequestCompletedEvent,
+  ) => void;
   readonly stopAbort: () => void;
 }
+
+export interface C64DriveDiskExport {
+  readonly bytes: Uint8Array;
+  readonly format: 'd64' | 'g64';
+}
+
+export type C64TapeTransportAction = 'play' | 'record' | 'rewind' | 'stop';
 
 interface MutableCpuRegisters {
   programCounter: number;
@@ -96,6 +109,7 @@ export class C64WorkerEmulator extends TypedEventEmitter<C64WorkerEmulatorEvents
     switch (message.type) {
       case 'initialized':
       case 'programLoaded':
+      case 'requestCompleted':
         this.resolveRequest(message.requestId, message);
         if (message.type === 'programLoaded') {
           this.emit('programLoaded', {
@@ -283,6 +297,170 @@ export class C64WorkerEmulator extends TypedEventEmitter<C64WorkerEmulatorEvents
     };
   }
 
+  async saveState(signal?: AbortSignal): Promise<Uint8Array> {
+    const result = await this.requestOperation({ kind: 'saveState' }, [], signal);
+    return operationBytes(result, 'state');
+  }
+
+  async loadState(input: ArrayBuffer | Uint8Array, signal?: AbortSignal): Promise<void> {
+    const bytes = copyToArrayBuffer(input);
+    requireAcknowledgement(
+      await this.requestOperation({ bytes, kind: 'loadState' }, [bytes], signal),
+    );
+  }
+
+  async getDiagnostics(signal?: AbortSignal): Promise<C64WorkerDiagnostics> {
+    const result = await this.requestOperation({ kind: 'diagnostics' }, [], signal);
+    if (result.kind !== 'diagnostics') {
+      throw new Error(`Worker returned ${result.kind} for a diagnostics request.`);
+    }
+    return result.value;
+  }
+
+  async insertCartridgeBytes(
+    input: ArrayBuffer | Uint8Array,
+    options: {
+      readonly easyFlashJumperInstalled?: boolean;
+      readonly resetMachine?: boolean;
+      readonly signal?: AbortSignal;
+    } = {},
+  ): Promise<void> {
+    const bytes = copyToArrayBuffer(input);
+    requireAcknowledgement(
+      await this.requestOperation(
+        {
+          bytes,
+          easyFlashJumperInstalled: options.easyFlashJumperInstalled ?? false,
+          kind: 'insertCartridge',
+          resetMachine: options.resetMachine ?? true,
+        },
+        [bytes],
+        options.signal,
+      ),
+    );
+  }
+
+  async ejectCartridge(resetMachine = true, signal?: AbortSignal): Promise<void> {
+    requireAcknowledgement(
+      await this.requestOperation({ kind: 'ejectCartridge', resetMachine }, [], signal),
+    );
+  }
+
+  async exportEasyFlash(chip: 'high' | 'low', signal?: AbortSignal): Promise<Uint8Array> {
+    const result = await this.requestOperation({ chip, kind: 'exportEasyFlash' }, [], signal);
+    return operationBytes(result, chip === 'low' ? 'easyFlashLow' : 'easyFlashHigh');
+  }
+
+  async attachReu(
+    sizeKib: number,
+    image?: ArrayBuffer | Uint8Array,
+    signal?: AbortSignal,
+  ): Promise<void> {
+    const imageBuffer = image === undefined ? null : copyToArrayBuffer(image);
+    requireAcknowledgement(
+      await this.requestOperation(
+        { image: imageBuffer, kind: 'attachReu', sizeKib },
+        imageBuffer ? [imageBuffer] : [],
+        signal,
+      ),
+    );
+  }
+
+  async detachReu(signal?: AbortSignal): Promise<Uint8Array> {
+    const result = await this.requestOperation({ kind: 'detachReu' }, [], signal);
+    return operationBytes(result, 'reu');
+  }
+
+  async exportReu(signal?: AbortSignal): Promise<Uint8Array> {
+    const result = await this.requestOperation({ kind: 'exportReu' }, [], signal);
+    return operationBytes(result, 'reu');
+  }
+
+  async insertTap(
+    input: ArrayBuffer | Uint8Array,
+    legacyV0OverflowPulseCycles = 0,
+    signal?: AbortSignal,
+  ): Promise<void> {
+    const bytes = copyToArrayBuffer(input);
+    requireAcknowledgement(
+      await this.requestOperation(
+        { bytes, kind: 'insertTap', legacyV0OverflowPulseCycles },
+        [bytes],
+        signal,
+      ),
+    );
+  }
+
+  async insertBlankTap(videoStandard: number, signal?: AbortSignal): Promise<void> {
+    requireAcknowledgement(
+      await this.requestOperation({ kind: 'insertBlankTap', videoStandard }, [], signal),
+    );
+  }
+
+  async ejectTap(signal?: AbortSignal): Promise<Uint8Array> {
+    const result = await this.requestOperation({ kind: 'ejectTap' }, [], signal);
+    return operationBytes(result, 'tap');
+  }
+
+  async setTapeTransport(action: C64TapeTransportAction, signal?: AbortSignal): Promise<void> {
+    requireAcknowledgement(
+      await this.requestOperation({ action, kind: 'tapeTransport' }, [], signal),
+    );
+  }
+
+  async seekTape(pulseIndex: number, signal?: AbortSignal): Promise<void> {
+    requireAcknowledgement(
+      await this.requestOperation(
+        { action: 'seek', kind: 'tapeTransport', pulseIndex },
+        [],
+        signal,
+      ),
+    );
+  }
+
+  async attachDrive1541(
+    deviceNumber: number,
+    rom: ArrayBuffer | Uint8Array,
+    signal?: AbortSignal,
+  ): Promise<void> {
+    const romBuffer = copyToArrayBuffer(rom);
+    requireAcknowledgement(
+      await this.requestOperation(
+        { deviceNumber, kind: 'attachDrive1541', rom: romBuffer },
+        [romBuffer],
+        signal,
+      ),
+    );
+  }
+
+  async detachDrive1541(signal?: AbortSignal): Promise<void> {
+    requireAcknowledgement(await this.requestOperation({ kind: 'detachDrive1541' }, [], signal));
+  }
+
+  async mountDrive1541Disk(
+    format: 'd64' | 'g64',
+    input: ArrayBuffer | Uint8Array,
+    writeProtected = false,
+    signal?: AbortSignal,
+  ): Promise<void> {
+    const bytes = copyToArrayBuffer(input);
+    requireAcknowledgement(
+      await this.requestOperation(
+        { bytes, format, kind: 'mountDrive1541Disk', writeProtected },
+        [bytes],
+        signal,
+      ),
+    );
+  }
+
+  async ejectDrive1541Disk(signal?: AbortSignal): Promise<C64DriveDiskExport> {
+    const result = await this.requestOperation({ kind: 'ejectDrive1541Disk' }, [], signal);
+    if (result.kind !== 'driveDisk') {
+      throw new Error(`Worker returned ${result.kind} for a 1541 disk eject request.`);
+    }
+    return { bytes: new Uint8Array(result.bytes), format: result.format };
+  }
+
   dispose(): void {
     if (this.disposed) return;
     this.disposed = true;
@@ -341,7 +519,7 @@ export class C64WorkerEmulator extends TypedEventEmitter<C64WorkerEmulatorEvents
 
   private resolveRequest(
     requestId: number,
-    event: C64WorkerInitializedEvent | C64WorkerProgramLoadedEvent,
+    event: C64WorkerInitializedEvent | C64WorkerProgramLoadedEvent | C64WorkerRequestCompletedEvent,
   ): void {
     const pending = this.pendingRequests.get(requestId);
     if (!pending) return;
@@ -358,13 +536,19 @@ export class C64WorkerEmulator extends TypedEventEmitter<C64WorkerEmulatorEvents
     pending.reject(new Error(event.error));
   }
 
-  private sendRequest<Result extends C64WorkerInitializedEvent | C64WorkerProgramLoadedEvent>(
+  private sendRequest<
+    Result extends
+      C64WorkerInitializedEvent | C64WorkerProgramLoadedEvent | C64WorkerRequestCompletedEvent,
+  >(
     requestId: number,
     command: C64WorkerCommand,
     transfer: Transferable[],
     signal?: AbortSignal,
   ): Promise<Result> {
     signal?.throwIfAborted();
+    if (this.disposed) {
+      return Promise.reject(new Error('C64 Wasm Worker was disposed.'));
+    }
     return new Promise<Result>((resolve, reject) => {
       const handleAbort = (): void => {
         this.pendingRequests.delete(requestId);
@@ -379,6 +563,21 @@ export class C64WorkerEmulator extends TypedEventEmitter<C64WorkerEmulatorEvents
       });
       this.post(command, transfer);
     });
+  }
+
+  private async requestOperation(
+    operation: C64WorkerOperation,
+    transfer: Transferable[],
+    signal?: AbortSignal,
+  ): Promise<C64WorkerOperationResult> {
+    const requestId = this.takeRequestId();
+    const event = await this.sendRequest<C64WorkerRequestCompletedEvent>(
+      requestId,
+      { operation, requestId, type: 'request' },
+      transfer,
+      signal,
+    );
+    return event.result;
   }
 
   private takeRequestId(): number {
@@ -452,7 +651,27 @@ async function initializeWorker(
 }
 
 function exactArrayBuffer(bytes: Uint8Array): ArrayBuffer {
-  return Uint8Array.from(bytes).buffer;
+  return copyToArrayBuffer(bytes);
+}
+
+function copyToArrayBuffer(input: ArrayBuffer | Uint8Array): ArrayBuffer {
+  return input instanceof Uint8Array ? Uint8Array.from(input).buffer : input.slice(0);
+}
+
+function requireAcknowledgement(result: C64WorkerOperationResult): void {
+  if (result.kind !== 'ack') {
+    throw new Error(`Worker returned ${result.kind} for a mutating operation.`);
+  }
+}
+
+function operationBytes(
+  result: C64WorkerOperationResult,
+  source: Extract<C64WorkerOperationResult, { readonly kind: 'bytes' }>['source'],
+): Uint8Array {
+  if (result.kind !== 'bytes' || result.source !== source) {
+    throw new Error(`Worker did not return the expected ${source} bytes.`);
+  }
+  return new Uint8Array(result.bytes);
 }
 
 function abortError(signal: AbortSignal | undefined): Error {

@@ -9,6 +9,11 @@
 // --------------------------------------------------------------------------
 
 import { TransferableBufferPool } from './TransferableBufferPool';
+import {
+  C64WasmWorkerMachine,
+  c64WorkerOperationMutatesMachine,
+  type C64WasmVm,
+} from './C64WasmWorkerMachine';
 import type {
   C64WorkerCommand,
   C64WorkerEvent,
@@ -16,30 +21,6 @@ import type {
   C64WorkerProgramLoadedEvent,
   C64WorkerState,
 } from './C64WasmWorkerProtocol';
-
-interface C64WasmVm {
-  audio_sample_count(): number;
-  audio_sample_rate_hz(): number;
-  audio_samples_ptr(): number;
-  basic_ready(): boolean;
-  frame_generation_low(): number;
-  frame_height(): number;
-  frame_pixels_len(): number;
-  frame_pixels_ptr(): number;
-  frame_width(): number;
-  free(): void;
-  install_basic_prg(bytes: Uint8Array): void;
-  program_counter(): number;
-  reset(): void;
-  run_until_next_frame(): number;
-  set_host_input(
-    pressedRowsByColumn: Uint8Array,
-    shiftLockPressed: boolean,
-    joystickPort1Grounded: number,
-    joystickPort2Grounded: number,
-    restoreKeyPressed: boolean,
-  ): void;
-}
 
 interface C64WasmVmConstructor {
   withFirmware(
@@ -77,6 +58,7 @@ const DOUBLE_BUFFER_CAPACITY = 2;
 
 const scope = globalThis as unknown as WorkerScope;
 let vm: C64WasmVm | undefined;
+let machine: C64WasmWorkerMachine | undefined;
 let wasmMemory: WebAssembly.Memory | undefined;
 let frameBuffers: TransferableBufferPool | undefined;
 let audioBuffers: TransferableBufferPool | undefined;
@@ -112,6 +94,9 @@ async function handleCommand(command: C64WorkerCommand): Promise<void> {
       return;
     case 'loadProgram':
       await loadProgram(command.requestId, command.bytes, command.resetMachine);
+      return;
+    case 'request':
+      executeRequest(command);
       return;
     case 'cancelRequest':
       cancelledRequests.add(command.requestId);
@@ -153,6 +138,7 @@ async function initialize(command: Extract<C64WorkerCommand, { readonly type: 'i
     nextVm.reset();
 
     vm = nextVm;
+    machine = new C64WasmWorkerMachine(nextVm);
     wasmMemory = initialized.memory;
     width = nextVm.frame_width();
     height = nextVm.frame_height();
@@ -322,6 +308,26 @@ async function loadProgram(
   }
 }
 
+function executeRequest(command: Extract<C64WorkerCommand, { readonly type: 'request' }>): void {
+  const resumeAfterRequest = state === 'running';
+  const mutatesMachine = c64WorkerOperationMutatesMachine(command.operation);
+  if (mutatesMachine) pause();
+  try {
+    const execution = requireMachine().execute(command.operation);
+    post(
+      {
+        requestId: command.requestId,
+        result: execution.result,
+        type: 'requestCompleted',
+      },
+      execution.transfer,
+    );
+    if (mutatesMachine && resumeAfterRequest) start();
+  } catch (error: unknown) {
+    publishRequestError(command.requestId, error);
+  }
+}
+
 function throwIfCancelled(requestId: number): void {
   if (cancelledRequests.has(requestId)) throw new DOMException('Operation aborted.', 'AbortError');
 }
@@ -359,6 +365,7 @@ function dispose(): void {
   pause();
   vm?.free();
   vm = undefined;
+  machine = undefined;
   wasmMemory = undefined;
   frameBuffers = undefined;
   audioBuffers = undefined;
@@ -368,6 +375,11 @@ function dispose(): void {
 function requireVm(): C64WasmVm {
   if (!vm) throw new Error('C64 Wasm Worker is not initialized.');
   return vm;
+}
+
+function requireMachine(): C64WasmWorkerMachine {
+  if (!machine) throw new Error('C64 Wasm Worker machine is not initialized.');
+  return machine;
 }
 
 function requireWasmMemory(): WebAssembly.Memory {
