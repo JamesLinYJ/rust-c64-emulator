@@ -1,0 +1,113 @@
+# Rust C64 Emulator 实施路线图
+
+创建日期：2026年08月10日
+
+维护者：OpenAI Codex
+
+## 项目原则
+
+- Strict、Turbo、SuperCPU、VM Enhanced 是公开的体系结构模式，不针对软件名称、镜像哈希或 benchmark 特判。
+- Rust 拥有生产时序核心；TypeScript/React 负责平台 API、Worker、UI，并在迁移期间作为差分 oracle。
+- 每条 6510 指令保留架构周期成本；Turbo 通过每个 C64 系统周期的内部槽位获得加速，外设仍运行在 PAL/NTSC 时钟域。
+- 基础 64 KiB RAM 始终连贯；MMIO、处理器端口、颜色 RAM、Cartridge、REU/DMA 通过统一 BusBridge。
+- 普通修改不改历史文件日期；新建或实质重构文件记录真实日期和实际作者。
+- 暂不创建 GitHub Projects 看板。所有进度以本文件和本地测试结果为准，完整验证前不发布。
+- Rust、Clippy、TypeScript、ESLint 与 Wasm 构建均以零 warning 为硬门槛，不使用全局 suppression 掩盖问题。
+- Rust Strict 在成为生产后端前必须通过仓库现有全部固定版本、固定 SHA-256 的 VICE 参考验证。
+
+## 当前基线
+
+- [x] 创建公开仓库 `JamesLinYJ/rust-c64-emulator`。
+- [x] 从 TypeScript 仓库迁移 `main`，保留原提交、作者和日期。
+- [x] 保持旧仓库不改名、不归档；新仓库保留只读 `legacy` remote。
+- [x] 创建本地开发分支 `agent/rust-wasm-modern-vm`。
+- [x] 建立本地实施路线图。
+
+## M0：Foundation
+
+- [x] 建立 Cargo workspace：`c64-core`、`c64-wasm`。
+- [x] 固定 Rust 1.97.0、edition 2024、`wasm32-unknown-unknown`、wasm-pack 0.15.0、wasm-bindgen 0.2.127。
+- [x] 生成并纳入版本控制范围的 `Cargo.lock`，配置 release LTO、单 codegen unit 和 `panic=abort`。
+- [x] 定义 PAL/NTSC 虚拟时间、profile、execution、pacing、BusBridge 和 save-state v1。
+- [x] 为浏览器和 Node 生成同源 Wasm 包；禁止每周期跨 JS/Wasm。
+- [x] 将 Cargo、Clippy、rustfmt 和 Wasm 构建加入现有 CI 与 npm 门禁。
+
+验收：全新 checkout 可以构建 native、web Wasm、Node Wasm，并通过原 TypeScript 全部门禁。
+
+验收证据（2026年08月10日）：`npm run check`、`npm run verify:wasm` 以及固定 SHA-256 的完整
+`verify:reference` 链均通过；VICE revision 46176 的 CPU port、CIA、VIC-II、1541、Tape、SID、
+Cartridge 与程序语料无差异。参考资产下载采用哈希校验、有界重试和原子缓存，网络瞬断不会再留下半文件。
+
+## M1：Rust Strict
+
+- [x] 迁移 6510、处理器端口、PLA、RAM/ROM 和精确总线周期。
+- [x] 迁移 VIC-II、CIA、SID 和主机严格调度器。
+- [ ] 完成 1541 整机迁移；VIA、IEC、GCR 和 D64 底层已进入 Rust，VIA2/机构/G64/drive machine 待组合。
+- [ ] 迁移 Datasette、Cartridge/EasyFlash 和 REU。
+- [ ] 把版本化架构状态扩展到全部芯片/外设；现有 trace 和 TypeScript/Rust 差分适配器继续补齐。
+- [ ] 所有参考测试一致后切换生产 Strict；TypeScript 核心转为测试 oracle。
+
+验收：全部 256 opcode、IRQ/NMI/RDY/BA/AEC、设备参考轨迹、程序、视频和音频零语义回归。
+
+## M2：Turbo 语义
+
+- [ ] 实现每系统周期 2..64 个内部 CPU 槽位和一次性锁定 Auto 档位。
+- [ ] 实现物理页能力、代码版本、映射 generation 和统一地址空间分类。
+- [ ] 实现强顺序 BusBridge、VIC 优先、REU/DMA 所有权和精确事件退出。
+- [ ] 实现自修改代码、隐藏 RAM、Cartridge bank 和 DMA 写入失效。
+- [ ] 实现 opt-in `$D030/$D031`、`$D07A/$D07B`，Reset 恢复 Strict/1MHz。
+
+验收：Strict/Turbo 随机差分和全部桥接边界通过，不存在软件专用路径。
+
+## M3：Turbo 执行引擎
+
+- [ ] 建立预解码 basic block 和紧凑 uop IR。
+- [ ] 加入页依赖 guard、热后继、分支目标缓存和 hot trace。
+- [ ] 加入安全 uop fusion、lazy flags、延迟写回和精确 deopt。
+- [ ] 热路径无临时分配；MMIO 永不推测执行；保持 CSP-safe。
+
+验收：固定 runner 上 BASIC ≥10×、纯 RAM ≥15×、通用 I/O 混合负载 ≥3×，输出哈希一致。
+
+## M4：平台运行时
+
+- [ ] 将 Wasm VM 放入 module Worker。
+- [ ] 定义 run/pause/reset/media/input/state/diagnostics 命令协议。
+- [ ] 实现可回收 Transferable 帧/PCM 缓冲；SAB 与 simd128 仅作可选优化。
+- [ ] Chrome/Edge、Firefox、WebKit、Node 使用同一 Rust 核心。
+
+验收：PAL 50 Hz、NTSC 60 Hz 稳定，UI 不阻塞，参考机器无音频 underrun。
+
+## M5：SuperCPU
+
+- [ ] 实现 W65C816 emulation/native、24 位地址、M/X、寄存器、向量和周期。
+- [ ] 实现 decimal、WAI/STP、block move 和 bank 0 C64 映射。
+- [ ] 提供最多 16 MiB 直接 Fast RAM、公开控制寄存器和 20 MHz preset。
+- [ ] 仅加载用户提供且经过哈希校验的 firmware。
+
+验收：独立 65C816 指令向量、随机差分和 SuperCPU 兼容语料通过；Reset 为 E=1、1MHz。
+
+## M6：VM Enhanced
+
+- [ ] 定义版本化 capability discovery，不增加私有 CPU opcode。
+- [ ] 提供最多 256 MiB 按需分配的额外内存池。
+- [ ] 实现 32 位 copy/fill/scatter-gather/chained DMA、IRQ、错误与重叠语义。
+- [ ] CPU、VIC、REU、Enhanced DMA 共用页一致性协议。
+
+验收：DMA 属性/模糊测试覆盖越界、链、重叠、IRQ、失效和 save-state replay。
+
+## M7：Stable
+
+- [ ] 固定公开兼容语料、来源、版本和 SHA-256。
+- [ ] 运行 Rust native/Wasm、TypeScript oracle、浏览器和 Node 矩阵。
+- [ ] 记录语义速度、宿主帧预算、underrun、block hit、失效和 deopt 原因。
+- [ ] 完成架构、模式、状态兼容、firmware 政策和可复现构建文档。
+- [ ] Strict、Turbo、SuperCPU、Enhanced 独立达到门槛后分别标记稳定。
+
+## 每次变更门禁
+
+1. 先写能够复现缺口的确定性测试。
+2. 实现公开架构规则，不添加程序或 benchmark 特判。
+3. 运行 `cargo fmt --check`、Clippy `-D warnings`、Cargo tests、Wasm tests，输出不得包含 warning。
+4. 运行 `npm run check` 和仓库全部 VICE 驱动的 `npm run verify:reference`；涉及平台时运行 `npm run verify:browser`。
+5. 检查 diff，只包含本阶段相关文件，且未改动无关日期。
+6. 在用户要求发布后才 commit、push；远端 CI 通过后再关闭对应事项。

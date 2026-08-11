@@ -12,7 +12,7 @@ const typedConfigs = [
 
 export default tseslint.config(
   {
-    ignores: ['dist/**', 'coverage/**', 'legacy/**', 'js/**'],
+    ignores: ['dist/**', 'coverage/**', 'generated/**', 'legacy/**', 'js/**', 'target/**'],
   },
   eslint.configs.recommended,
   ...typedConfigs,

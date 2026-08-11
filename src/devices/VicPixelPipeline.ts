@@ -10,7 +10,6 @@
 
 import { packRgbaPixel } from '../shared/RgbaPixel';
 import type { VicCycleResult } from './VicCycleSequencer';
-import type { VicFetchPipeline } from './VicFetchPipeline';
 import type { VicSprite } from './VicSprite';
 import { PAL_VIC_TIMING, type VicTiming } from './VicTiming';
 
@@ -32,6 +31,14 @@ export interface VicPixelRegisters {
 export interface VicPixelCollisionSink {
   recordSpriteForegroundCollision(spriteMask: number): void;
   recordSpriteSpriteCollision(spriteMask: number): void;
+}
+
+export interface VicPixelDataSource {
+  readonly spriteDisplayMask: number;
+  screenMatrixByte(column: number): number;
+  colorMatrixNibble(column: number): number;
+  graphicsByte(column: number): number;
+  spriteDataWord(spriteIndex: number): number;
 }
 
 export interface VicPixelPipelineOptions {
@@ -112,7 +119,7 @@ export class VicPixelPipeline {
     cycle: VicCycleResult,
     borderPixelMask: number,
     registers: VicPixelRegisters,
-    fetch: VicFetchPipeline,
+    fetch: VicPixelDataSource,
     collisions: VicPixelCollisionSink,
   ): void {
     if (cycle.cycle < 1 || cycle.cycle > this.timing.cyclesPerRasterLine) {
@@ -211,7 +218,7 @@ export class VicPixelPipeline {
   private resolveGraphicsPixel(
     vicX: number,
     registers: VicPixelRegisters,
-    fetch: VicFetchPipeline,
+    fetch: VicPixelDataSource,
   ): void {
     const result = this.graphicsPixelResult;
     const background0 =
@@ -343,7 +350,7 @@ export class VicPixelPipeline {
     vicX: number,
     displayMask: number,
     registers: VicPixelRegisters,
-    fetch: VicFetchPipeline,
+    fetch: VicPixelDataSource,
   ): void {
     let mask = 0;
     let selectedColor = TRANSPARENT_PIXEL;

@@ -1,0 +1,395 @@
+// +-------------------------------------------------------------------------
+//
+//   TypeScript Commodore 64 模拟器 - C64 主板级芯片接线
+//
+//   文件:       chipset.rs
+//
+//   日期:       2026年08月11日
+//   作者:       OpenAI Codex
+// --------------------------------------------------------------------------
+
+use crate::address_space::{C64BusDevices, CartridgeLines};
+use crate::architecture::VideoStandard;
+use crate::processor_port::ProcessorPortOutputState;
+
+use super::cia::{Mos6526, Mos6526Model, Mos6526Timing};
+use super::iec::{IecBus, IecLine, IecPort};
+use super::sid::{
+    DEFAULT_SAMPLE_RATE_HZ, NTSC_PROCESSOR_CLOCK_HZ, PAL_PROCESSOR_CLOCK_HZ, Sid, SidModel,
+};
+use super::vic::{VicError, VicII, VicMemoryBus};
+
+const CIA1_PORT_B_LIGHT_PEN_INPUT: u8 = 1 << 4;
+const CIA2_IEC_ATTENTION_OUTPUT: u8 = 1 << 3;
+const CIA2_IEC_CLOCK_OUTPUT: u8 = 1 << 4;
+const CIA2_IEC_DATA_OUTPUT: u8 = 1 << 5;
+const CIA2_IEC_CLOCK_INPUT: u8 = 1 << 6;
+const CIA2_IEC_DATA_INPUT: u8 = 1 << 7;
+const CIA2_NON_IEC_INPUTS_HIGH: u8 = 0x3f;
+
+/// 主板级芯片接线。尚未迁移的扩展范围保持明确 open bus，不存在 TypeScript fallback。
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct C64Chipset {
+    irq_cia: Mos6526,
+    nmi_cia: Mos6526,
+    vic: VicII,
+    sid: Sid,
+    iec_bus: IecBus,
+    iec_host_port: IecPort,
+    cartridge_lines: CartridgeLines,
+    processor_port_output: ProcessorPortOutputState,
+    last_cpu_read_was_held: bool,
+}
+
+impl C64Chipset {
+    pub fn new(video_standard: VideoStandard) -> Self {
+        Self::new_with_sid_model(video_standard, SidModel::Mos6581)
+    }
+
+    pub fn new_with_sid_model(video_standard: VideoStandard, sid_model: SidModel) -> Self {
+        let timing = match video_standard {
+            VideoStandard::Pal => Mos6526Timing::PAL,
+            VideoStandard::Ntsc => Mos6526Timing::NTSC,
+        };
+        let sid_clock_hz = match video_standard {
+            VideoStandard::Pal => PAL_PROCESSOR_CLOCK_HZ,
+            VideoStandard::Ntsc => NTSC_PROCESSOR_CLOCK_HZ,
+        };
+        let (iec_bus, iec_host_port) = IecBus::new_with_attached_port();
+        Self {
+            irq_cia: Mos6526::new_with_valid_timing(Mos6526Model::Original, timing),
+            nmi_cia: Mos6526::new_with_valid_timing(Mos6526Model::Original, timing),
+            vic: VicII::new(),
+            sid: Sid::new_with_valid_rates(sid_model, sid_clock_hz, DEFAULT_SAMPLE_RATE_HZ),
+            iec_bus,
+            iec_host_port,
+            cartridge_lines: CartridgeLines::DISCONNECTED,
+            processor_port_output: ProcessorPortOutputState {
+                direction: 0,
+                output_latch: 0,
+                output_pins: 0xff,
+            },
+            last_cpu_read_was_held: false,
+        }
+    }
+
+    pub const fn cia1(&self) -> &Mos6526 {
+        &self.irq_cia
+    }
+
+    pub const fn cia2(&self) -> &Mos6526 {
+        &self.nmi_cia
+    }
+
+    pub const fn cia1_mut(&mut self) -> &mut Mos6526 {
+        &mut self.irq_cia
+    }
+
+    pub const fn cia2_mut(&mut self) -> &mut Mos6526 {
+        &mut self.nmi_cia
+    }
+
+    pub const fn irq_asserted(&self) -> bool {
+        self.irq_cia.interrupt_pending() || self.vic.interrupt_pending()
+    }
+
+    pub const fn nmi_asserted(&self) -> bool {
+        self.nmi_cia.interrupt_pending()
+    }
+
+    pub const fn processor_port_output(&self) -> ProcessorPortOutputState {
+        self.processor_port_output
+    }
+
+    pub const fn vic(&self) -> &VicII {
+        &self.vic
+    }
+
+    pub const fn vic_mut(&mut self) -> &mut VicII {
+        &mut self.vic
+    }
+
+    pub const fn sid(&self) -> &Sid {
+        &self.sid
+    }
+
+    pub const fn sid_mut(&mut self) -> &mut Sid {
+        &mut self.sid
+    }
+
+    pub const fn iec_bus(&self) -> &IecBus {
+        &self.iec_bus
+    }
+
+    pub const fn iec_bus_mut(&mut self) -> &mut IecBus {
+        &mut self.iec_bus
+    }
+
+    pub const fn ba_low(&self) -> bool {
+        self.vic.ba_low()
+    }
+
+    pub const fn aec_low(&self) -> bool {
+        self.vic.aec_low()
+    }
+
+    pub fn begin_cpu_read(&mut self) {
+        self.last_cpu_read_was_held = false;
+    }
+
+    pub fn mark_cpu_read_held(&mut self) {
+        self.last_cpu_read_was_held = true;
+    }
+
+    /// # Errors
+    ///
+    /// VIC 半周期计划出现内部不一致时返回显式错误。
+    pub fn clock_system_cycle<M: VicMemoryBus>(&mut self, memory: &mut M) -> Result<(), VicError> {
+        self.clock_cias();
+        let result = self.clock_vic(memory);
+        self.clock_sid();
+        result
+    }
+
+    pub(crate) fn clock_cias(&mut self) {
+        self.irq_cia.clock_cycle();
+        self.nmi_cia.clock_cycle();
+        self.synchronize_light_pen_input();
+    }
+
+    pub(crate) fn clock_vic<M: VicMemoryBus>(&mut self, memory: &mut M) -> Result<(), VicError> {
+        self.vic.clock_cycle(memory).map(|_| ())
+    }
+
+    pub(crate) fn clock_sid(&mut self) {
+        self.sid.clock_cycle();
+    }
+
+    pub fn reset(&mut self) {
+        self.irq_cia.reset();
+        self.nmi_cia.reset();
+        self.vic.reset();
+        self.sid.reset();
+        self.update_iec_host_outputs(false);
+        self.synchronize_light_pen_input();
+        self.last_cpu_read_was_held = false;
+    }
+
+    pub fn vic_bank_address(&self) -> u16 {
+        u16::from(!self.nmi_cia.port_a_output_pins() & 0x03) << 14
+    }
+
+    fn synchronize_light_pen_input(&mut self) {
+        self.vic.set_light_pen_input_high(
+            self.irq_cia.port_b_output_pins() & CIA1_PORT_B_LIGHT_PEN_INPUT != 0,
+        );
+    }
+
+    fn cia2_port_a_external_inputs(&self) -> u8 {
+        let state = self.iec_bus.state();
+        CIA2_NON_IEC_INPUTS_HIGH
+            | if state.clock_high() {
+                CIA2_IEC_CLOCK_INPUT
+            } else {
+                0
+            }
+            | if state.data_high() {
+                CIA2_IEC_DATA_INPUT
+            } else {
+                0
+            }
+    }
+
+    fn update_iec_host_outputs(&mut self, reset_asserted: bool) {
+        let asserted = self.nmi_cia.port_a_output_latch() & self.nmi_cia.port_a_data_direction();
+        let mut low_mask = 0;
+        if asserted & CIA2_IEC_ATTENTION_OUTPUT != 0 {
+            low_mask |= IecLine::Attention.mask();
+        }
+        if asserted & CIA2_IEC_CLOCK_OUTPUT != 0 {
+            low_mask |= IecLine::Clock.mask();
+        }
+        if asserted & CIA2_IEC_DATA_OUTPUT != 0 {
+            low_mask |= IecLine::Data.mask();
+        }
+        if reset_asserted {
+            low_mask |= IecLine::Reset.mask();
+        }
+        let result = self.iec_bus.set_port_low_mask(self.iec_host_port, low_mask);
+        debug_assert!(result.is_ok(), "the C64 IEC host port must stay attached");
+    }
+}
+
+impl Default for C64Chipset {
+    fn default() -> Self {
+        Self::new(VideoStandard::Pal)
+    }
+}
+
+impl C64BusDevices for C64Chipset {
+    fn cartridge_lines(&self) -> CartridgeLines {
+        self.cartridge_lines
+    }
+
+    fn read_io(&mut self, address: u16, open_bus: u8) -> u8 {
+        match address >> 8 {
+            0xd0..=0xd3 => self.vic.read_register(address),
+            0xd4..=0xd7 => self.sid.read(address),
+            0xdc => self.irq_cia.read_pulled_up(address),
+            0xdd => self
+                .nmi_cia
+                .read(address, self.cia2_port_a_external_inputs(), 0xff),
+            _ => open_bus,
+        }
+    }
+
+    fn write_io(&mut self, address: u16, value: u8) {
+        match address >> 8 {
+            0xd0..=0xd3 => self.vic.write_register(address, value),
+            0xd4..=0xd7 => self.sid.write(address, value),
+            0xdc => self.irq_cia.write(address, value),
+            0xdd => {
+                self.nmi_cia.write(address, value);
+                self.update_iec_host_outputs(false);
+            }
+            _ => {}
+        }
+    }
+
+    fn cpu_read_was_held(&self) -> bool {
+        self.last_cpu_read_was_held
+    }
+
+    fn open_bus_value(&self) -> u8 {
+        self.vic.phi1_data_bus_value()
+    }
+
+    fn processor_port_output_changed(&mut self, state: ProcessorPortOutputState) {
+        self.processor_port_output = state;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::address_space::C64BusDevices;
+    use crate::architecture::VideoStandard;
+    use crate::devices::cia::{control, interrupt, register};
+    use crate::devices::iec::IecLine;
+    use crate::devices::sid::{control as sid_control, register as sid_register};
+    use crate::devices::vic::VicMemoryBus;
+
+    use super::{C64Chipset, CIA1_PORT_B_LIGHT_PEN_INPUT};
+
+    struct ZeroVicMemory;
+
+    impl VicMemoryBus for ZeroVicMemory {
+        fn cpu_data_bus_value(&self) -> u8 {
+            0xff
+        }
+
+        fn read_vic_byte(&mut self, _address_in_bank: u16) -> u8 {
+            0
+        }
+
+        fn read_vic_color(&mut self, _index: u16) -> u8 {
+            0
+        }
+    }
+
+    #[test]
+    fn board_io_routes_dc_to_irq_cia_and_dd_to_nmi_cia() {
+        let mut devices = C64Chipset::new(VideoStandard::Pal);
+        let mut memory = ZeroVicMemory;
+        devices.write_io(0xdc04, 1);
+        devices.write_io(0xdc05, 0);
+        devices.write_io(0xdc0d, interrupt::SET_OR_PENDING | interrupt::TIMER_A);
+        devices.write_io(0xdc0e, control::START | control::FORCE_LOAD);
+        for _ in 0..5 {
+            devices.clock_system_cycle(&mut memory).unwrap();
+        }
+        assert!(devices.irq_asserted());
+        assert!(!devices.nmi_asserted());
+        assert_eq!(
+            devices.read_io(0xdc0d, 0xff),
+            interrupt::SET_OR_PENDING | interrupt::TIMER_A
+        );
+        assert_eq!(devices.read_io(0xdd0d, 0xff), 0);
+        assert_eq!(
+            devices.cia1().port_a_output_pins(),
+            devices.read_io(u16::from(register::PORT_A) | 0xdc00, 0xff)
+        );
+    }
+
+    #[test]
+    fn held_read_state_survives_hardware_cycles_until_the_next_cpu_read() {
+        let mut devices = C64Chipset::new(VideoStandard::Pal);
+        let mut memory = ZeroVicMemory;
+        devices.begin_cpu_read();
+        devices.mark_cpu_read_held();
+        devices.clock_system_cycle(&mut memory).unwrap();
+        assert!(devices.cpu_read_was_held());
+
+        devices.begin_cpu_read();
+        assert!(!devices.cpu_read_was_held());
+    }
+
+    #[test]
+    fn cia1_port_b_fire_line_drives_the_vic_light_pen_input() {
+        let mut devices = C64Chipset::new(VideoStandard::Pal);
+        let mut memory = ZeroVicMemory;
+        devices.write_io(0xdc03, CIA1_PORT_B_LIGHT_PEN_INPUT);
+        devices.clock_system_cycle(&mut memory).unwrap();
+
+        assert_ne!(devices.read_io(0xd019, 0xff) & 0x08, 0);
+    }
+
+    #[test]
+    fn board_io_routes_all_sid_mirrors_and_clocks_the_chip() {
+        let mut devices = C64Chipset::new(VideoStandard::Pal);
+        let mut memory = ZeroVicMemory;
+        devices.write_io(0xd500, 0x34);
+        devices.write_io(0xd601, 0x12);
+        devices.write_io(0xd704, sid_control::SAWTOOTH);
+        devices.clock_system_cycle(&mut memory).unwrap();
+
+        assert_eq!(
+            devices
+                .sid()
+                .voice_state(0)
+                .expect("voice exists")
+                .frequency,
+            0x1234
+        );
+        assert_eq!(devices.read_io(0xd400, 0xff), sid_control::SAWTOOTH);
+        let oscillator_3 = devices.read_io(u16::from(sid_register::OSCILLATOR_3) | 0xd400, 0xff);
+        assert_eq!(devices.read_io(0xd400, 0xff), oscillator_3);
+    }
+
+    #[test]
+    fn cia2_uses_open_collector_iec_inputs_and_inverted_outputs() {
+        let mut devices = C64Chipset::new(VideoStandard::Pal);
+        let external = devices.iec_bus_mut().attach().unwrap();
+        devices
+            .iec_bus_mut()
+            .set_port_low_mask(external, IecLine::Clock.mask() | IecLine::Data.mask())
+            .unwrap();
+
+        assert_eq!(devices.read_io(0xdd00, 0xff), 0x3f);
+        devices
+            .iec_bus_mut()
+            .set_port_low_mask(external, 0)
+            .unwrap();
+        devices.write_io(0xdd02, 0x38);
+        devices.write_io(0xdd00, 0x38);
+        let state = devices.iec_bus().state();
+        assert!(!state.attention_high());
+        assert!(!state.clock_high());
+        assert!(!state.data_high());
+
+        devices.write_io(0xdd00, 0x00);
+        let state = devices.iec_bus().state();
+        assert!(state.attention_high());
+        assert!(state.clock_high());
+        assert!(state.data_high());
+    }
+}

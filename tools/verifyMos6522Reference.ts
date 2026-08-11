@@ -9,6 +9,7 @@
 // --------------------------------------------------------------------------
 
 import { createHash } from 'node:crypto';
+import { execFileSync } from 'node:child_process';
 import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import { dirname, resolve } from 'node:path';
 
@@ -232,6 +233,10 @@ interface ReplayProgram {
   readonly stopAddress: number;
 }
 
+interface RustReplayResult {
+  readonly samples: readonly number[];
+}
+
 function appendLoopBack(program: number[], loopAddress: number): void {
   program.push(OPCODE.incrementX, OPCODE.branchNotEqual);
   const branchNextAddress = TEST_PROGRAM_ADDRESS + program.length + 1;
@@ -447,6 +452,37 @@ function replayReferenceCase(
   }
 }
 
+function replayRustReferenceCases(replays: readonly ReplayProgram[]): readonly Uint8Array[] {
+  const output = execFileSync(
+    'cargo',
+    ['run', '--quiet', '--locked', '-p', 'c64-core', '--example', 'vice_1541_via'],
+    {
+      encoding: 'utf8',
+      input: JSON.stringify(
+        replays.map((replay) => ({
+          program: [...replay.bytes],
+          stopAddress: replay.stopAddress,
+        })),
+      ),
+      maxBuffer: 4 * 1024 * 1024,
+    },
+  );
+  const results = JSON.parse(output) as readonly RustReplayResult[];
+  if (results.length !== replays.length) {
+    throw new Error(
+      `Rust 1541 VIA replay returned ${results.length} cases for ${replays.length} requests.`,
+    );
+  }
+  return results.map((result, caseIndex) => {
+    if (result.samples.length !== REFERENCE_SAMPLE_COUNT) {
+      throw new Error(
+        `Rust 1541 VIA replay case ${caseIndex} returned ${result.samples.length} samples.`,
+      );
+    }
+    return Uint8Array.from(result.samples);
+  });
+}
+
 function formatDifference(expected: Uint8Array, actual: Uint8Array): string {
   const differences: string[] = [];
   for (let index = 0; index < expected.length && differences.length < 16; index += 1) {
@@ -482,23 +518,34 @@ function verifyFixtures<Reference extends Mos6522ReferenceFile>(
   fixtures: readonly LoadedReference<Reference>[],
   buildReplay: (reference: Reference, caseIndex: number) => ReplayProgram,
 ): number {
+  const replays = fixtures.flatMap((fixture) =>
+    fixture.cases.map((_expected, caseIndex) => buildReplay(fixture.reference, caseIndex)),
+  );
+  const rustResults = replayRustReferenceCases(replays);
   let verifiedCases = 0;
+  let replayIndex = 0;
   for (const fixture of fixtures) {
     for (let caseIndex = 0; caseIndex < fixture.cases.length; caseIndex += 1) {
       const expected = fixture.cases[caseIndex];
       if (expected === undefined) throw new RangeError(`Missing reference case ${caseIndex}.`);
-      const actual = replayReferenceCase(
-        fixture.reference,
-        caseIndex,
-        buildReplay(fixture.reference, caseIndex),
-      );
+      const replay = replays[replayIndex];
+      const rustActual = rustResults[replayIndex];
+      if (!replay || !rustActual) throw new RangeError(`Missing VIA replay ${replayIndex}.`);
+      const actual = replayReferenceCase(fixture.reference, caseIndex, replay);
       const difference = formatDifference(expected, actual);
       if (difference.length > 0) {
         throw new Error(
           `VICE ${fixture.reference.file} case ${caseIndex} mismatch: ${difference}.`,
         );
       }
+      const rustDifference = formatDifference(expected, rustActual);
+      if (rustDifference.length > 0) {
+        throw new Error(
+          `Rust/VICE ${fixture.reference.file} case ${caseIndex} mismatch: ${rustDifference}.`,
+        );
+      }
       verifiedCases += 1;
+      replayIndex += 1;
     }
   }
   return verifiedCases;
@@ -513,7 +560,7 @@ async function main(): Promise<void> {
   const timerCases = verifyFixtures(timerFixtures, buildTimerReplayProgram);
 
   console.log(
-    `PASS MOS 6522 reference: ${pb7Cases} PB7 pages and ${timerCases} timer/IFR pages from real 1541 hardware at VICE revision ${VICE_TEST_REVISION}.`,
+    `PASS TypeScript/Rust MOS 6522 reference: ${pb7Cases} PB7 pages and ${timerCases} timer/IFR pages from real 1541 hardware at VICE revision ${VICE_TEST_REVISION}.`,
   );
 }
 

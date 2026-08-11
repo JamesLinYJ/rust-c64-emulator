@@ -38,6 +38,13 @@ export interface VicFetchRegisters {
 export interface VicFetchSnapshot {
   readonly colorMatrix: Uint8Array;
   readonly graphics: Uint8Array;
+  readonly idleState: boolean;
+  readonly lastPhi1Byte: number;
+  readonly lastPhi2Byte: number;
+  readonly matrixIndex: number;
+  readonly pendingSpriteData: Uint32Array;
+  readonly pendingSpritePointers: Uint8Array;
+  readonly refreshCounter: number;
   readonly rowCounter: number;
   readonly screenMatrix: Uint8Array;
   readonly spriteData: Uint32Array;
@@ -157,6 +164,13 @@ export class VicFetchPipeline {
     return {
       colorMatrix: this.colorMatrix.slice(),
       graphics: this.graphics.slice(),
+      idleState: this.idleState,
+      lastPhi1Byte: this.lastPhi1Byte,
+      lastPhi2Byte: this.lastPhi2Byte,
+      matrixIndex: this.matrixIndex,
+      pendingSpriteData: this.spriteData.slice(),
+      pendingSpritePointers: this.spritePointers.slice(),
+      refreshCounter: this.refreshCounter,
       rowCounter: this.rowCounter,
       screenMatrix: this.screenMatrix.slice(),
       spriteData: this.lineSpriteData.slice(),

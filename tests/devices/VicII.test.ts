@@ -51,6 +51,26 @@ describe('VicII', () => {
     vic.recordSpriteForegroundCollision(0x02);
 
     expect(vic.isRasterInterruptPending()).toBe(true);
+    expect(vic.sprites.map((sprite) => sprite.collisionWithSprite)).toEqual([
+      true,
+      true,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+    ]);
+    expect(vic.sprites.map((sprite) => sprite.collisionWithForeground)).toEqual([
+      false,
+      true,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+    ]);
     expect(vic.read(VIC_REGISTER.spriteSpriteCollision)).toBe(0x03);
     expect(vic.read(VIC_REGISTER.spriteSpriteCollision)).toBe(0x00);
     expect(vic.read(VIC_REGISTER.spriteForegroundCollision)).toBe(0x02);
