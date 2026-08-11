@@ -15,6 +15,25 @@ use crate::devices::sid::SidModel;
 pub const MINIMUM_TURBO_SLOTS: u8 = 2;
 pub const MAXIMUM_TURBO_SLOTS: u8 = 64;
 
+const VM_ENHANCED_TURBO_SPEEDS: [SlotsPerSystemCycle; 16] = [
+    SlotsPerSystemCycle::STRICT,
+    SlotsPerSystemCycle(2),
+    SlotsPerSystemCycle(3),
+    SlotsPerSystemCycle(4),
+    SlotsPerSystemCycle(6),
+    SlotsPerSystemCycle(8),
+    SlotsPerSystemCycle(10),
+    SlotsPerSystemCycle(12),
+    SlotsPerSystemCycle(14),
+    SlotsPerSystemCycle(16),
+    SlotsPerSystemCycle(20),
+    SlotsPerSystemCycle(24),
+    SlotsPerSystemCycle(32),
+    SlotsPerSystemCycle(40),
+    SlotsPerSystemCycle(48),
+    SlotsPerSystemCycle(64),
+];
+
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq, wincode::SchemaRead, wincode::SchemaWrite)]
 #[repr(u8)]
 pub enum MachineProfile {
@@ -203,6 +222,27 @@ impl ExecutionStatus {
     }
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum TurboControlCommand {
+    Configure(SlotsPerSystemCycle),
+    SetEnabled {
+        enabled: bool,
+        fallback: Option<SlotsPerSystemCycle>,
+    },
+}
+
+pub(crate) const fn vm_enhanced_turbo_slots(index: u8) -> SlotsPerSystemCycle {
+    VM_ENHANCED_TURBO_SPEEDS[(index & 0x0f) as usize]
+}
+
+pub(crate) fn vm_enhanced_turbo_index(slots: SlotsPerSystemCycle) -> u8 {
+    VM_ENHANCED_TURBO_SPEEDS
+        .iter()
+        .position(|candidate| *candidate >= slots)
+        .and_then(|index| u8::try_from(index).ok())
+        .unwrap_or(0x0f)
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq, wincode::SchemaRead, wincode::SchemaWrite)]
 pub struct ExecutionController {
     status: ExecutionStatus,
@@ -239,7 +279,8 @@ impl ExecutionController {
             ExecutionRequest::Turbo(TurboSpeedRequest::Manual(requested)) => {
                 requested.get() >= MINIMUM_TURBO_SLOTS
                     && requested.get() <= MAXIMUM_TURBO_SLOTS
-                    && effective == requested.get()
+                    && (effective == requested.get()
+                        || effective == SlotsPerSystemCycle::STRICT.get())
                     && !self.status.awaiting_auto_calibration
             }
             ExecutionRequest::Turbo(TurboSpeedRequest::Auto { maximum }) => {
@@ -296,6 +337,55 @@ impl ExecutionController {
 
     pub fn reset_to_strict(&mut self) {
         self.status = Self::new().status;
+    }
+
+    pub(crate) const fn configured_slots(self) -> SlotsPerSystemCycle {
+        match self.status.requested {
+            ExecutionRequest::Strict => SlotsPerSystemCycle::STRICT,
+            ExecutionRequest::Turbo(TurboSpeedRequest::Manual(slots)) => slots,
+            ExecutionRequest::Turbo(TurboSpeedRequest::Auto { maximum }) => maximum,
+        }
+    }
+
+    pub(crate) fn apply_guest_turbo_control(&mut self, command: TurboControlCommand) {
+        match command {
+            TurboControlCommand::Configure(slots) => {
+                if slots.is_strict() {
+                    self.reset_to_strict();
+                    return;
+                }
+                let enabled = self.status.is_turbo();
+                self.status = ExecutionStatus {
+                    requested: ExecutionRequest::Turbo(TurboSpeedRequest::Manual(slots)),
+                    effective_slots: if enabled {
+                        slots
+                    } else {
+                        SlotsPerSystemCycle::STRICT
+                    },
+                    awaiting_auto_calibration: false,
+                };
+            }
+            TurboControlCommand::SetEnabled { enabled, fallback } => {
+                let configured = match self.status.requested {
+                    ExecutionRequest::Strict => fallback.unwrap_or(SlotsPerSystemCycle::STRICT),
+                    ExecutionRequest::Turbo(TurboSpeedRequest::Manual(slots)) => slots,
+                    ExecutionRequest::Turbo(TurboSpeedRequest::Auto { maximum }) => maximum,
+                };
+                if configured.is_strict() {
+                    self.reset_to_strict();
+                    return;
+                }
+                self.status = ExecutionStatus {
+                    requested: ExecutionRequest::Turbo(TurboSpeedRequest::Manual(configured)),
+                    effective_slots: if enabled {
+                        configured
+                    } else {
+                        SlotsPerSystemCycle::STRICT
+                    },
+                    awaiting_auto_calibration: false,
+                };
+            }
+        }
     }
 }
 

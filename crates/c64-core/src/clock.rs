@@ -121,6 +121,17 @@ impl VirtualClock {
         self.timestamp.system_cycle = self.timestamp.system_cycle.wrapping_add(1);
     }
 
+    /// Retire the current Turbo CPU slot and close its legacy system cycle.
+    ///
+    /// Guest-visible speed controls use this transition before installing a
+    /// different slot budget, so no partial old-speed cycle survives a mode
+    /// change or enters a save-state.
+    pub(crate) fn finish_turbo_system_cycle(&mut self) {
+        debug_assert!(!self.slots_per_system_cycle.is_strict());
+        self.timestamp.slot = 0;
+        self.timestamp.system_cycle = self.timestamp.system_cycle.wrapping_add(1);
+    }
+
     /// Advance one external C64 system cycle while RDY keeps the current CPU
     /// micro-cycle pending. The internal Turbo slot is intentionally preserved.
     pub fn advance_external_wait_cycle(&mut self) {

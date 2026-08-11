@@ -36,6 +36,7 @@ pub enum PhysicalTarget {
     Reu,
     EnhancedDma,
     OpenBus,
+    TurboControl,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, wincode::SchemaRead, wincode::SchemaWrite)]

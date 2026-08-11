@@ -11,10 +11,11 @@
 use core::fmt;
 
 use crate::{
-    address_space::{C64AddressSpace, C64BusDevices, C64Firmware},
+    address_space::{C64AddressSpace, C64BusDevices, C64Firmware, CartridgeLines, CartridgeRegion},
     architecture::{
         CoreConfig, ExecutionConfigError, ExecutionController, ExecutionRequest, ExecutionStatus,
-        MachineProfile, SlotsPerSystemCycle, TurboSpeedRequest,
+        MachineProfile, SlotsPerSystemCycle, TurboControlCommand, TurboSpeedRequest,
+        vm_enhanced_turbo_index, vm_enhanced_turbo_slots,
     },
     bus::{BusAccessKind, BusBridge, BusMaster, BusRequest, BusResponse},
     clock::{VirtualClock, VirtualClockError, VirtualTimestamp},
@@ -112,6 +113,9 @@ impl CoreDiagnostics {
         if delta.last_bus_bridge_transaction.is_some() {
             self.last_bus_bridge_transaction = delta.last_bus_bridge_transaction;
         }
+        self.execution_mode_changes = self
+            .execution_mode_changes
+            .wrapping_add(delta.execution_mode_changes);
     }
 }
 
@@ -749,12 +753,16 @@ impl C64Core {
         let mut diagnostics_delta = CoreDiagnostics::default();
         let mut pending_sid_cycles = 0;
         let hardware_error = {
-            let mut bus = ClockedCpuBus::<true>::new(
-                &mut self.address_space,
-                &mut self.devices,
-                &mut self.clock,
-                &mut self.irq_line,
-                &mut self.nmi_line,
+            let mut bus = ClockedCpuBus::<true, true>::new(
+                ClockedCpuBusWiring {
+                    address_space: &mut self.address_space,
+                    devices: &mut self.devices,
+                    execution: &mut self.execution,
+                    profile: self.config.profile,
+                    clock: &mut self.clock,
+                    irq_line: &mut self.irq_line,
+                    nmi_line: &mut self.nmi_line,
+                },
                 &mut diagnostics_delta,
                 &mut pending_sid_cycles,
             );
@@ -850,10 +858,19 @@ impl C64Core {
         diagnostics: &mut CoreDiagnostics,
         pending_sid_cycles: &mut u32,
     ) -> Result<u64, CoreError> {
-        if self.execution.status().effective_slots == SlotsPerSystemCycle::STRICT {
-            self.run_cpu_slot_inner::<true>(diagnostics, pending_sid_cycles)
-        } else {
-            self.run_cpu_slot_inner::<false>(diagnostics, pending_sid_cycles)
+        let strict = self.execution.status().effective_slots == SlotsPerSystemCycle::STRICT;
+        let turbo_controls = self.config.profile != MachineProfile::Stock;
+        match (strict, turbo_controls) {
+            (true, false) => {
+                self.run_cpu_slot_inner::<true, false>(diagnostics, pending_sid_cycles)
+            }
+            (true, true) => self.run_cpu_slot_inner::<true, true>(diagnostics, pending_sid_cycles),
+            (false, false) => {
+                self.run_cpu_slot_inner::<false, false>(diagnostics, pending_sid_cycles)
+            }
+            (false, true) => {
+                self.run_cpu_slot_inner::<false, true>(diagnostics, pending_sid_cycles)
+            }
         }
     }
 
@@ -863,25 +880,30 @@ impl C64Core {
         diagnostics: &mut CoreDiagnostics,
         pending_sid_cycles: &mut u32,
     ) -> Result<u64, CoreError> {
-        self.run_cpu_slot_inner::<true>(diagnostics, pending_sid_cycles)
+        self.run_cpu_slot_inner::<true, false>(diagnostics, pending_sid_cycles)
     }
 
     #[inline]
-    fn run_cpu_slot_inner<const STRICT: bool>(
+    fn run_cpu_slot_inner<const STRICT: bool, const TURBO_CONTROLS: bool>(
         &mut self,
         diagnostics: &mut CoreDiagnostics,
         pending_sid_cycles: &mut u32,
     ) -> Result<u64, CoreError> {
-        let mut elapsed_cycles = self.service_reu_dma::<STRICT>(diagnostics, pending_sid_cycles)?;
+        let mut elapsed_cycles =
+            self.service_reu_dma::<STRICT, TURBO_CONTROLS>(diagnostics, pending_sid_cycles)?;
         self.service_pending_interrupt();
         self.service_nmi_vector_takeover();
         let (completed_system_cycle, hardware_error) = {
-            let mut bus = ClockedCpuBus::<STRICT>::new(
-                &mut self.address_space,
-                &mut self.devices,
-                &mut self.clock,
-                &mut self.irq_line,
-                &mut self.nmi_line,
+            let mut bus = ClockedCpuBus::<STRICT, TURBO_CONTROLS>::new(
+                ClockedCpuBusWiring {
+                    address_space: &mut self.address_space,
+                    devices: &mut self.devices,
+                    execution: &mut self.execution,
+                    profile: self.config.profile,
+                    clock: &mut self.clock,
+                    irq_line: &mut self.irq_line,
+                    nmi_line: &mut self.nmi_line,
+                },
                 diagnostics,
                 pending_sid_cycles,
             );
@@ -924,7 +946,8 @@ impl C64Core {
         let initial_generation = self.devices.vic().frame_generation();
         let mut elapsed_system_cycles = 0_u64;
         let mut pending_sid_cycles = 0;
-        let strict = self.execution.status().effective_slots == SlotsPerSystemCycle::STRICT;
+        let fixed_stock_strict = self.config.profile == MachineProfile::Stock
+            && self.execution.status().effective_slots == SlotsPerSystemCycle::STRICT;
         let result = (|| {
             while self.devices.vic().frame_generation() == initial_generation
                 || self.clock.timestamp().slot != 0
@@ -934,7 +957,7 @@ impl C64Core {
                         maximum_system_cycles,
                     });
                 }
-                let elapsed = if strict {
+                let elapsed = if fixed_stock_strict {
                     self.run_strict_cpu_slot(diagnostics, &mut pending_sid_cycles)?
                 } else {
                     self.run_cpu_slot(diagnostics, &mut pending_sid_cycles)?
@@ -947,7 +970,7 @@ impl C64Core {
         result
     }
 
-    fn service_reu_dma<const STRICT: bool>(
+    fn service_reu_dma<const STRICT: bool, const TURBO_CONTROLS: bool>(
         &mut self,
         diagnostics: &mut CoreDiagnostics,
         pending_sid_cycles: &mut u32,
@@ -955,12 +978,12 @@ impl C64Core {
         if !self.devices.reu().is_some_and(RamExpansionUnit::dma_active) {
             return Ok(0);
         }
-        self.service_active_reu_dma::<STRICT>(diagnostics, pending_sid_cycles)
+        self.service_active_reu_dma::<STRICT, TURBO_CONTROLS>(diagnostics, pending_sid_cycles)
     }
 
     #[cold]
     #[inline(never)]
-    fn service_active_reu_dma<const STRICT: bool>(
+    fn service_active_reu_dma<const STRICT: bool, const TURBO_CONTROLS: bool>(
         &mut self,
         diagnostics: &mut CoreDiagnostics,
         pending_sid_cycles: &mut u32,
@@ -968,12 +991,16 @@ impl C64Core {
         let mut elapsed_cycles = 0;
         while self.devices.reu().is_some_and(RamExpansionUnit::dma_active) {
             let hardware_error = {
-                let mut bus = ClockedCpuBus::<STRICT>::new(
-                    &mut self.address_space,
-                    &mut self.devices,
-                    &mut self.clock,
-                    &mut self.irq_line,
-                    &mut self.nmi_line,
+                let mut bus = ClockedCpuBus::<STRICT, TURBO_CONTROLS>::new(
+                    ClockedCpuBusWiring {
+                        address_space: &mut self.address_space,
+                        devices: &mut self.devices,
+                        execution: &mut self.execution,
+                        profile: self.config.profile,
+                        clock: &mut self.clock,
+                        irq_line: &mut self.irq_line,
+                        nmi_line: &mut self.nmi_line,
+                    },
                     diagnostics,
                     pending_sid_cycles,
                 );
@@ -1278,9 +1305,158 @@ impl BusBridge for ReuDmaBus<'_> {
     }
 }
 
-struct ClockedCpuBus<'a, const STRICT: bool> {
+const VM_TURBO_ENABLE_REGISTER: u16 = 0xd030;
+const VM_TURBO_SPEED_REGISTER: u16 = 0xd031;
+const SUPERCPU_NORMAL_REGISTER: u16 = 0xd07a;
+const SUPERCPU_TURBO_REGISTER: u16 = 0xd07b;
+
+const fn turbo_control_is_selected(
+    profile: MachineProfile,
+    access: BusAccessKind,
+    address: u16,
+) -> bool {
+    match profile {
+        MachineProfile::Stock => false,
+        MachineProfile::SuperCpu => {
+            matches!(access, BusAccessKind::Write)
+                && matches!(address, SUPERCPU_NORMAL_REGISTER | SUPERCPU_TURBO_REGISTER)
+        }
+        MachineProfile::VmEnhanced => match address {
+            VM_TURBO_ENABLE_REGISTER | VM_TURBO_SPEED_REGISTER => true,
+            SUPERCPU_NORMAL_REGISTER | SUPERCPU_TURBO_REGISTER => {
+                matches!(access, BusAccessKind::Write)
+            }
+            _ => false,
+        },
+    }
+}
+
+struct ProfiledBusDevices<'a> {
+    devices: &'a mut C64Chipset,
+    profile: MachineProfile,
+    execution: ExecutionController,
+    pending_turbo_control: &'a mut Option<TurboControlCommand>,
+}
+
+impl ProfiledBusDevices<'_> {
+    fn turbo_register_read(&self, address: u16) -> Option<u8> {
+        if self.profile != MachineProfile::VmEnhanced {
+            return None;
+        }
+        match address {
+            VM_TURBO_ENABLE_REGISTER => Some(u8::from(self.execution.status().is_turbo())),
+            VM_TURBO_SPEED_REGISTER => {
+                Some(vm_enhanced_turbo_index(self.execution.configured_slots()))
+            }
+            _ => None,
+        }
+    }
+
+    fn turbo_register_write(&self, address: u16, value: u8) -> Option<TurboControlCommand> {
+        match (self.profile, address) {
+            (MachineProfile::SuperCpu, SUPERCPU_NORMAL_REGISTER) => {
+                Some(TurboControlCommand::SetEnabled {
+                    enabled: false,
+                    fallback: Some(vm_enhanced_turbo_slots(10)),
+                })
+            }
+            (MachineProfile::SuperCpu, SUPERCPU_TURBO_REGISTER) => {
+                Some(TurboControlCommand::SetEnabled {
+                    enabled: true,
+                    fallback: Some(vm_enhanced_turbo_slots(10)),
+                })
+            }
+            (MachineProfile::VmEnhanced, VM_TURBO_ENABLE_REGISTER) => {
+                Some(TurboControlCommand::SetEnabled {
+                    enabled: value & 0x01 != 0,
+                    fallback: None,
+                })
+            }
+            (MachineProfile::VmEnhanced, VM_TURBO_SPEED_REGISTER) => Some(
+                TurboControlCommand::Configure(vm_enhanced_turbo_slots(value)),
+            ),
+            (MachineProfile::VmEnhanced, SUPERCPU_NORMAL_REGISTER) => {
+                Some(TurboControlCommand::SetEnabled {
+                    enabled: false,
+                    fallback: None,
+                })
+            }
+            (MachineProfile::VmEnhanced, SUPERCPU_TURBO_REGISTER) => {
+                Some(TurboControlCommand::SetEnabled {
+                    enabled: true,
+                    fallback: None,
+                })
+            }
+            _ => None,
+        }
+    }
+}
+
+impl C64BusDevices for ProfiledBusDevices<'_> {
+    fn cartridge_lines(&self) -> CartridgeLines {
+        C64BusDevices::cartridge_lines(self.devices)
+    }
+
+    fn read_io(&mut self, address: u16, open_bus: u8) -> u8 {
+        self.turbo_register_read(address)
+            .unwrap_or_else(|| C64BusDevices::read_io(self.devices, address, open_bus))
+    }
+
+    fn write_io(&mut self, address: u16, value: u8) {
+        if let Some(command) = self.turbo_register_write(address, value) {
+            *self.pending_turbo_control = Some(command);
+        } else {
+            C64BusDevices::write_io(self.devices, address, value);
+        }
+    }
+
+    fn read_cartridge(&mut self, region: CartridgeRegion, address: u16) -> Option<u8> {
+        C64BusDevices::read_cartridge(self.devices, region, address)
+    }
+
+    fn write_cartridge(&mut self, region: CartridgeRegion, address: u16, value: u8) {
+        C64BusDevices::write_cartridge(self.devices, region, address, value);
+    }
+
+    fn open_bus_value(&self) -> u8 {
+        C64BusDevices::open_bus_value(self.devices)
+    }
+
+    fn cpu_read_was_held(&self) -> bool {
+        C64BusDevices::cpu_read_was_held(self.devices)
+    }
+
+    fn processor_port_input_state(&self) -> crate::processor_port::ProcessorPortInputState {
+        C64BusDevices::processor_port_input_state(self.devices)
+    }
+
+    fn processor_port_output_changed(
+        &mut self,
+        state: crate::processor_port::ProcessorPortOutputState,
+    ) {
+        C64BusDevices::processor_port_output_changed(self.devices, state);
+    }
+
+    fn observe_cpu_write(&mut self, address: u16) {
+        C64BusDevices::observe_cpu_write(self.devices, address);
+    }
+}
+
+struct ClockedCpuBusWiring<'a> {
     address_space: &'a mut C64AddressSpace,
     devices: &'a mut C64Chipset,
+    execution: &'a mut ExecutionController,
+    profile: MachineProfile,
+    clock: &'a mut VirtualClock,
+    irq_line: &'a mut CpuIrqLine,
+    nmi_line: &'a mut CpuNmiLine,
+}
+
+struct ClockedCpuBus<'a, const STRICT: bool, const TURBO_CONTROLS: bool> {
+    address_space: &'a mut C64AddressSpace,
+    devices: &'a mut C64Chipset,
+    execution: &'a mut ExecutionController,
+    profile: MachineProfile,
     clock: &'a mut VirtualClock,
     irq_line: &'a mut CpuIrqLine,
     nmi_line: &'a mut CpuNmiLine,
@@ -1289,22 +1465,30 @@ struct ClockedCpuBus<'a, const STRICT: bool> {
     passive_cpu_read: Option<(u16, u8)>,
     board_inputs_current: bool,
     completed_system_cycle: bool,
+    pending_turbo_control: Option<TurboControlCommand>,
     hardware_error: Option<C64ChipsetError>,
 }
 
-impl<'a, const STRICT: bool> ClockedCpuBus<'a, STRICT> {
+impl<'a, const STRICT: bool, const TURBO_CONTROLS: bool> ClockedCpuBus<'a, STRICT, TURBO_CONTROLS> {
     fn new(
-        address_space: &'a mut C64AddressSpace,
-        devices: &'a mut C64Chipset,
-        clock: &'a mut VirtualClock,
-        irq_line: &'a mut CpuIrqLine,
-        nmi_line: &'a mut CpuNmiLine,
+        wiring: ClockedCpuBusWiring<'a>,
         diagnostics: &'a mut CoreDiagnostics,
         pending_sid_cycles: &'a mut u32,
     ) -> Self {
+        let ClockedCpuBusWiring {
+            address_space,
+            devices,
+            execution,
+            profile,
+            clock,
+            irq_line,
+            nmi_line,
+        } = wiring;
         Self {
             address_space,
             devices,
+            execution,
+            profile,
             clock,
             irq_line,
             nmi_line,
@@ -1313,6 +1497,7 @@ impl<'a, const STRICT: bool> ClockedCpuBus<'a, STRICT> {
             passive_cpu_read: None,
             board_inputs_current: false,
             completed_system_cycle: false,
+            pending_turbo_control: None,
             hardware_error: None,
         }
     }
@@ -1395,6 +1580,48 @@ impl<'a, const STRICT: bool> ClockedCpuBus<'a, STRICT> {
             .clock_sid_cycles(core::mem::take(self.pending_sid_cycles));
     }
 
+    fn read_cpu_address(&mut self, address: u16, board_inputs_current: bool) -> u8 {
+        if TURBO_CONTROLS {
+            let mut devices = ProfiledBusDevices {
+                devices: self.devices,
+                profile: self.profile,
+                execution: *self.execution,
+                pending_turbo_control: &mut self.pending_turbo_control,
+            };
+            let mut bus = if board_inputs_current {
+                self.address_space.cpu_bus_after_passive_read(&mut devices)
+            } else {
+                self.address_space.cpu_bus(&mut devices)
+            };
+            bus.read(address)
+        } else {
+            let mut bus = if board_inputs_current {
+                self.address_space.cpu_bus_after_passive_read(self.devices)
+            } else {
+                self.address_space.cpu_bus(self.devices)
+            };
+            bus.read(address)
+        }
+    }
+
+    fn write_cpu_address(&mut self, address: u16, value: u8) {
+        if TURBO_CONTROLS {
+            let mut devices = ProfiledBusDevices {
+                devices: self.devices,
+                profile: self.profile,
+                execution: *self.execution,
+                pending_turbo_control: &mut self.pending_turbo_control,
+            };
+            self.address_space
+                .cpu_bus(&mut devices)
+                .write(address, value);
+        } else {
+            self.address_space
+                .cpu_bus(self.devices)
+                .write(address, value);
+        }
+    }
+
     fn finish_held_system_cycle(&mut self, cpu_read_address: u16) {
         self.clock.advance_external_wait_cycle();
         self.diagnostics.elapsed_system_cycles =
@@ -1403,11 +1630,34 @@ impl<'a, const STRICT: bool> ClockedCpuBus<'a, STRICT> {
     }
 
     fn finish_cpu_slot(&mut self) {
+        let previous_status = self.execution.status();
+        let mut next_execution = *self.execution;
+        if let Some(command) = self.pending_turbo_control.take() {
+            next_execution.apply_guest_turbo_control(command);
+        }
+        let next_status = next_execution.status();
+        let execution_changed = next_status != previous_status;
+        let effective_speed_changed =
+            next_status.effective_slots != previous_status.effective_slots;
+
         if STRICT {
             self.clock.consume_strict_cpu_slot();
             self.completed_system_cycle = true;
+        } else if effective_speed_changed {
+            self.clock.finish_turbo_system_cycle();
+            self.completed_system_cycle = true;
         } else {
             self.completed_system_cycle = self.clock.consume_cpu_slot();
+        }
+        if execution_changed {
+            if effective_speed_changed {
+                self.clock
+                    .set_slots_per_system_cycle(next_status.effective_slots)
+                    .expect("a guest speed change must commit at a system-cycle boundary");
+            }
+            *self.execution = next_execution;
+            self.diagnostics.execution_mode_changes =
+                self.diagnostics.execution_mode_changes.wrapping_add(1);
         }
         self.diagnostics.retired_cpu_slots = self.diagnostics.retired_cpu_slots.wrapping_add(1);
         if self.completed_system_cycle {
@@ -1428,7 +1678,15 @@ impl<'a, const STRICT: bool> ClockedCpuBus<'a, STRICT> {
             BusAccessKind::Read => self.address_space.memory().classify_read(address),
             BusAccessKind::Write => self.address_space.memory().classify_write(address),
         };
-        if self.devices.reu().is_some()
+        if TURBO_CONTROLS
+            && descriptor.target == PhysicalTarget::Vic
+            && turbo_control_is_selected(self.profile, access, address)
+        {
+            descriptor = PageDescriptor::bridged(
+                PhysicalTarget::TurboControl,
+                matches!(access, BusAccessKind::Read),
+            );
+        } else if self.devices.reu().is_some()
             && descriptor.target == PhysicalTarget::Cartridge
             && address >> 8 == 0xdf
         {
@@ -1454,7 +1712,9 @@ impl<'a, const STRICT: bool> ClockedCpuBus<'a, STRICT> {
     }
 }
 
-impl<const STRICT: bool> BusBridge for ClockedCpuBus<'_, STRICT> {
+impl<const STRICT: bool, const TURBO_CONTROLS: bool> BusBridge
+    for ClockedCpuBus<'_, STRICT, TURBO_CONTROLS>
+{
     fn transact(&mut self, request: BusRequest) -> BusResponse {
         debug_assert_eq!(request.master, BusMaster::Cpu);
         debug_assert_eq!(request.timestamp, self.clock.timestamp());
@@ -1472,18 +1732,11 @@ impl<const STRICT: bool> BusBridge for ClockedCpuBus<'_, STRICT> {
                 {
                     value
                 } else {
-                    let mut bus = if self.board_inputs_current {
-                        self.address_space.cpu_bus_after_passive_read(self.devices)
-                    } else {
-                        self.address_space.cpu_bus(self.devices)
-                    };
-                    bus.read(address)
+                    self.read_cpu_address(address, self.board_inputs_current)
                 }
             }
             BusAccessKind::Write => {
-                self.address_space
-                    .cpu_bus(self.devices)
-                    .write(address, request.value);
+                self.write_cpu_address(address, request.value);
                 request.value
             }
         };
@@ -1500,7 +1753,9 @@ impl<const STRICT: bool> BusBridge for ClockedCpuBus<'_, STRICT> {
     }
 }
 
-impl<const STRICT: bool> CpuBus for ClockedCpuBus<'_, STRICT> {
+impl<const STRICT: bool, const TURBO_CONTROLS: bool> CpuBus
+    for ClockedCpuBus<'_, STRICT, TURBO_CONTROLS>
+{
     fn read(&mut self, address: u16) -> u8 {
         self.devices.begin_cpu_read();
         let held_cycles_before = self.diagnostics.held_cpu_read_system_cycles;
@@ -1521,12 +1776,7 @@ impl<const STRICT: bool> CpuBus for ClockedCpuBus<'_, STRICT> {
             {
                 value
             } else {
-                let mut bus = if board_inputs_current {
-                    self.address_space.cpu_bus_after_passive_read(self.devices)
-                } else {
-                    self.address_space.cpu_bus(self.devices)
-                };
-                bus.read(address)
+                self.read_cpu_address(address, board_inputs_current)
             }
         } else {
             self.board_inputs_current = board_inputs_current;
@@ -1568,9 +1818,7 @@ impl<const STRICT: bool> CpuBus for ClockedCpuBus<'_, STRICT> {
             self.flush_sid_cycles();
         }
         if STRICT {
-            self.address_space
-                .cpu_bus(self.devices)
-                .write(address, value);
+            self.write_cpu_address(address, value);
         } else {
             let (request, descriptor) = self.cpu_bus_request(BusAccessKind::Write, address, value);
             let response = self.transact(request);
@@ -1696,8 +1944,9 @@ impl std::error::Error for CoreError {}
 mod tests {
     use crate::{
         address_space::{BASIC_ROM_BYTES, C64Firmware, CHARACTER_ROM_BYTES, KERNAL_ROM_BYTES},
-        architecture::{CoreConfig, MachineProfile},
+        architecture::{CoreConfig, ExecutionRequest, MachineProfile, TurboSpeedRequest},
         bus::{BusAccessKind, BusMaster},
+        clock::VirtualTimestamp,
         devices::reu::ReuSize,
         memory::{MemoryWriteSource, PageDomain, PhysicalTarget},
     };
@@ -1912,6 +2161,114 @@ mod tests {
         core.request_manual_turbo(20).unwrap();
         core.reset().unwrap();
         assert_eq!(core.config().profile, MachineProfile::SuperCpu);
+        assert!(!core.execution_status().is_turbo());
+    }
+
+    #[test]
+    fn vm_enhanced_turbo_registers_configure_toggle_and_report_speed() {
+        let mut core = C64Core::new(CoreConfig {
+            profile: MachineProfile::VmEnhanced,
+            ..CoreConfig::default()
+        });
+        // Configure U64E2 speed index 10 (20 slots), enable it through $d030,
+        // disable through the SuperCPU-compatible alias, then re-enable it.
+        let program = [
+            0xa9, 0x0a, 0x8d, 0x31, 0xd0, 0xa9, 0x01, 0x8d, 0x30, 0xd0, 0xa9, 0xaa, 0x8d, 0x7a,
+            0xd0, 0xa9, 0x55, 0x8d, 0x7b, 0xd0, 0xad, 0x30, 0xd0, 0x8d, 0x00, 0x40, 0xad, 0x31,
+            0xd0, 0x8d, 0x01, 0x40,
+        ];
+        for (offset, value) in program.into_iter().enumerate() {
+            core.write_base_ram(
+                0x2000 + u16::try_from(offset).unwrap(),
+                value,
+                MemoryWriteSource::HostLoader,
+            );
+        }
+        assert!(core.set_cpu_program_counter(0x2000));
+
+        core.run_cpu_slots(6).unwrap();
+        let configured = core.execution_status();
+        assert_eq!(
+            configured.requested,
+            ExecutionRequest::Turbo(TurboSpeedRequest::manual(20).unwrap())
+        );
+        assert!(!configured.is_turbo());
+
+        core.run_cpu_slots(6).unwrap();
+        assert_eq!(core.execution_status().effective_slots.get(), 20);
+        core.run_cpu_slots(6).unwrap();
+        assert!(!core.execution_status().is_turbo());
+        assert_eq!(core.timestamp().slot, 0);
+        core.run_cpu_slots(6).unwrap();
+        assert_eq!(core.execution_status().effective_slots.get(), 20);
+
+        core.run_cpu_slots(4).unwrap();
+        assert_eq!(core.cpu_state().accumulator, 1);
+        core.run_cpu_slots(8).unwrap();
+        assert_eq!(core.cpu_state().accumulator, 0x0a);
+        core.run_cpu_slots(4).unwrap();
+        assert_eq!(core.read_base_ram(0x4000), 1);
+        assert_eq!(core.read_base_ram(0x4001), 0x0a);
+    }
+
+    #[test]
+    fn supercpu_speed_alias_ends_the_current_turbo_cycle_at_an_integer_boundary() {
+        let mut core = C64Core::new(CoreConfig {
+            profile: MachineProfile::SuperCpu,
+            ..CoreConfig::default()
+        });
+        // LDA #$00; STA $d07b; STA $d07a. The written value is irrelevant.
+        for (address, value) in [
+            (0x2000, 0xa9),
+            (0x2001, 0x00),
+            (0x2002, 0x8d),
+            (0x2003, 0x7b),
+            (0x2004, 0xd0),
+            (0x2005, 0x8d),
+            (0x2006, 0x7a),
+            (0x2007, 0xd0),
+        ] {
+            core.write_base_ram(address, value, MemoryWriteSource::HostLoader);
+        }
+        assert!(core.set_cpu_program_counter(0x2000));
+
+        core.run_cpu_slots(6).unwrap();
+        assert_eq!(core.execution_status().effective_slots.get(), 20);
+        let enabled_at = core.timestamp();
+        assert_eq!(enabled_at.slot, 0);
+
+        core.run_cpu_slots(4).unwrap();
+        assert!(!core.execution_status().is_turbo());
+        assert_eq!(
+            core.timestamp(),
+            VirtualTimestamp {
+                system_cycle: enabled_at.system_cycle + 1,
+                slot: 0,
+            }
+        );
+    }
+
+    #[test]
+    fn stock_profile_does_not_expose_accelerator_speed_registers() {
+        let mut core = C64Core::default();
+        // LDA #$0f; STA $d031; STA $d07b.
+        for (address, value) in [
+            (0x2000, 0xa9),
+            (0x2001, 0x0f),
+            (0x2002, 0x8d),
+            (0x2003, 0x31),
+            (0x2004, 0xd0),
+            (0x2005, 0x8d),
+            (0x2006, 0x7b),
+            (0x2007, 0xd0),
+        ] {
+            core.write_base_ram(address, value, MemoryWriteSource::HostLoader);
+        }
+        assert!(core.set_cpu_program_counter(0x2000));
+
+        core.run_cpu_slots(10).unwrap();
+
+        assert_eq!(core.execution_status().requested, ExecutionRequest::Strict);
         assert!(!core.execution_status().is_turbo());
     }
 
