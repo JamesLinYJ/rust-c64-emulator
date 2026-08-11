@@ -12,7 +12,7 @@
   "author": "JamesLinYJ",
   "scripts": {
     "dev": "vite",
-    "build": "tsc -b && vite build",
+    "build": "npm run wasm:build:web && tsc -b && vite build && node --import tsx tools/packageSitesBuild.ts",
     "preview": "vite preview",
     "typecheck": "tsc -b --pretty false",
     "lint": "eslint . --max-warnings 0",

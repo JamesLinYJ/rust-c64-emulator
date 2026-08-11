@@ -15,6 +15,7 @@
   },
   "include": [
     "vite.config.ts",
+    "site",
     "eslint.config.js",
     "tools",
     "src/core/basicStartup.ts",

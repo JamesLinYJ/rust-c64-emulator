@@ -4,7 +4,13 @@ import reactRefresh from 'eslint-plugin-react-refresh';
 import globals from 'globals';
 import tseslint from 'typescript-eslint';
 
-const typedFiles = ['src/**/*.{ts,tsx}', 'tests/**/*.{ts,tsx}', 'tools/**/*.ts', 'vite.config.ts'];
+const typedFiles = [
+  'site/**/*.ts',
+  'src/**/*.{ts,tsx}',
+  'tests/**/*.{ts,tsx}',
+  'tools/**/*.ts',
+  'vite.config.ts',
+];
 const typedConfigs = [
   ...tseslint.configs.recommendedTypeChecked,
   ...tseslint.configs.stylisticTypeChecked,
