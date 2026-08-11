@@ -161,6 +161,21 @@ impl C64Core {
         Ok(())
     }
 
+    /// Borrow the attached drive mutably at a system-cycle boundary for coarse
+    /// media and debugger operations.
+    ///
+    /// # Errors
+    ///
+    /// Rejects an internal CPU slot or an empty drive slot.
+    pub fn drive1541_mut(
+        &mut self,
+    ) -> Result<&mut crate::devices::drive1541::drive::Commodore1541Drive, CoreError> {
+        self.clock.advance_system_cycles(0)?;
+        self.devices
+            .drive1541_mut()
+            .ok_or(C64ChipsetError::Drive1541NotAttached.into())
+    }
+
     /// 在下一个公开提交边界应用执行请求。
     ///
     /// # Errors
