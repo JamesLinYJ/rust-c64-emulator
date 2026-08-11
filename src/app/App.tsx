@@ -83,7 +83,7 @@ export function App() {
         phase={emulator.phase}
       />
 
-      <main className="dashboard" aria-label="TypeScript Commodore 64 Emulator 运行控制台">
+      <main className="dashboard" aria-label="Rust WebAssembly Commodore 64 Emulator 运行控制台">
         <section id="console" className="console-card" aria-label="Commodore 64 主机">
           <EmulatorWorkspace
             audioStatus={emulator.audioStatus}
@@ -123,12 +123,8 @@ export function App() {
 
       <footer className="app-footer">
         <span>PAL 硬件模型 · MIT License</span>
-        <a
-          href="https://github.com/JamesLinYJ/typescript-commodore-64-emulator"
-          target="_blank"
-          rel="noreferrer"
-        >
-          JamesLinYJ 原始项目
+        <a href="https://github.com/JamesLinYJ/rust-c64-emulator" target="_blank" rel="noreferrer">
+          JamesLinYJ Rust 项目
         </a>
       </footer>
     </div>

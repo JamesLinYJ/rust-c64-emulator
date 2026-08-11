@@ -73,7 +73,24 @@ class C64PcmAudioWorklet extends AudioWorkletProcessor {
       return;
     }
 
-    const dropped = this.samples.pushMany(command.samples);
+    const maximumSampleCount = command.buffer.byteLength / Float32Array.BYTES_PER_ELEMENT;
+    if (
+      !Number.isSafeInteger(command.sampleCount) ||
+      command.sampleCount < 0 ||
+      command.sampleCount > maximumSampleCount
+    ) {
+      return;
+    }
+    const samples = new Float32Array(command.buffer, 0, command.sampleCount);
+    const dropped = this.samples.pushMany(samples);
+    this.port.postMessage(
+      {
+        buffer: command.buffer,
+        recycleToken: command.recycleToken,
+        type: 'recycle',
+      },
+      [command.buffer],
+    );
     if (dropped > 0) {
       // 延迟上限优先：满载时丢最旧样本，保留最新硬件时间线，并显式累计 overrun。
       this.overrunSamples += dropped;

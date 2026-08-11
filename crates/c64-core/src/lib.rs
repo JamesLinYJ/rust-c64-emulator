@@ -38,6 +38,7 @@ pub use cpu::{
 };
 pub use devices::cia::{Mos6526, Mos6526Model, Mos6526Timing, Mos6526TimingError};
 pub use devices::iec::{IecBus, IecBusError, IecBusState, IecBusTransition, IecLine, IecPort};
+pub use devices::input::{C64HostInput, C64HostInputError};
 pub use devices::sid::{
     Sid, SidAudioResampler, SidConfigError, SidEnvelopeGenerator, SidExternalFilter, SidFilter,
     SidModel, SidMos6581Filter, SidMos8580Filter, SidOscillator, SidPcmRangeError,
@@ -47,6 +48,7 @@ pub use devices::via::{Mos6522, Mos6522ControlLine, Mos6522ShiftMode};
 pub use devices::vic::{VicCycleResult, VicCycleSequencer, VicCycleSignals};
 pub use devices::{C64Chipset, C64ChipsetError};
 pub use machine::{C64Core, CoreDiagnostics, CoreError, CpuBusAccessKind, CpuBusTransaction};
+pub use media::prg::{LoadedPrg, PrgError};
 pub use memory::{
     BASE_RAM_BYTES, CoherentMemory, MemoryWriteSource, PageDescriptor, PageDomain, PhysicalTarget,
 };

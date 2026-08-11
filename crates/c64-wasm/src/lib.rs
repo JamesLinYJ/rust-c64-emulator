@@ -17,16 +17,23 @@
 )]
 
 use c64_core::devices::reu::{RamExpansionUnit, ReuSize};
+use c64_core::devices::sid::DEFAULT_SAMPLE_RATE_HZ;
+use c64_core::devices::vic::{PAL_RASTER_OUTPUT_HEIGHT, VIC_RASTER_OUTPUT_WIDTH};
 use c64_core::media::tap::TapVideoStandard;
 use c64_core::{
-    C64Core, CoreConfig, CoreError, MachineProfile, MemoryWriteSource, PacingMode, SidModel,
-    VideoStandard,
+    C64Core, C64Firmware, CoreConfig, CoreError, MachineProfile, MemoryWriteSource, PacingMode,
+    SidModel, VideoStandard,
 };
 use wasm_bindgen::prelude::*;
+
+const MAXIMUM_FRAME_SYSTEM_CYCLES: u64 = 25_000;
+const AUDIO_BATCH_CAPACITY: usize = 2_048;
 
 #[wasm_bindgen]
 pub struct C64Vm {
     core: C64Core,
+    audio_samples: Vec<f32>,
+    audio_sample_count: usize,
 }
 
 #[wasm_bindgen]
@@ -49,6 +56,42 @@ impl C64Vm {
                 pacing: PacingMode::Realtime,
                 sid_model: SidModel::Mos6581,
             }),
+            audio_samples: vec![0.0; AUDIO_BATCH_CAPACITY],
+            audio_sample_count: 0,
+        })
+    }
+
+    /// 复制并校验真实固件后创建生产整机，固件不会跨越后续粗粒度 ABI 边界。
+    ///
+    /// # Errors
+    ///
+    /// profile、视频制式或任一 ROM 长度无效时返回 JavaScript Error。
+    #[wasm_bindgen(js_name = withFirmware)]
+    pub fn with_firmware(
+        profile: u8,
+        video_standard: u8,
+        basic: &[u8],
+        character: &[u8],
+        kernal: &[u8],
+    ) -> Result<Self, JsError> {
+        let profile = MachineProfile::from_code(profile)
+            .ok_or_else(|| JsError::new("无效 machine profile 编号"))?;
+        let video_standard = VideoStandard::from_code(video_standard)
+            .ok_or_else(|| JsError::new("无效视频制式编号"))?;
+        let firmware = C64Firmware::new(basic, character, kernal)
+            .map_err(|error| JsError::new(&error.to_string()))?;
+        Ok(Self {
+            core: C64Core::with_firmware(
+                CoreConfig {
+                    profile,
+                    video_standard,
+                    pacing: PacingMode::Realtime,
+                    sid_model: SidModel::Mos6581,
+                },
+                firmware,
+            ),
+            audio_samples: vec![0.0; AUDIO_BATCH_CAPACITY],
+            audio_sample_count: 0,
         })
     }
 
@@ -58,7 +101,99 @@ impl C64Vm {
     ///
     /// 当前不在安全提交边界时返回 JavaScript Error。
     pub fn reset(&mut self) -> Result<(), JsError> {
-        self.core.reset().map_err(to_js_error)
+        self.core.reset().map_err(to_js_error)?;
+        self.audio_sample_count = 0;
+        Ok(())
+    }
+
+    /// 一次推进到下一完整视频帧，并把同期 SID PCM 留在复用缓冲区。
+    ///
+    /// # Errors
+    ///
+    /// 核心执行失败或在安全周期上限内没有提交帧时返回 JavaScript Error。
+    pub fn run_until_next_frame(&mut self) -> Result<u32, JsError> {
+        let elapsed = self
+            .core
+            .run_until_next_video_frame(MAXIMUM_FRAME_SYSTEM_CYCLES)
+            .map_err(to_js_error)?;
+        self.audio_sample_count = self.core.pull_sid_samples_into(&mut self.audio_samples);
+        Ok(u32::try_from(elapsed).unwrap_or(u32::MAX))
+    }
+
+    pub fn frame_width(&self) -> u32 {
+        u32::try_from(VIC_RASTER_OUTPUT_WIDTH).unwrap_or(u32::MAX)
+    }
+
+    pub fn frame_height(&self) -> u32 {
+        u32::try_from(PAL_RASTER_OUTPUT_HEIGHT).unwrap_or(u32::MAX)
+    }
+
+    pub fn frame_pixels_ptr(&self) -> usize {
+        self.core.devices().vic().frame_pixels().as_ptr() as usize
+    }
+
+    pub fn frame_pixels_len(&self) -> u32 {
+        u32::try_from(self.core.devices().vic().frame_pixels().len()).unwrap_or(u32::MAX)
+    }
+
+    pub fn frame_generation_low(&self) -> u32 {
+        low_u32(self.core.devices().vic().frame_generation())
+    }
+
+    pub fn audio_samples_ptr(&self) -> usize {
+        self.audio_samples.as_ptr() as usize
+    }
+
+    pub fn audio_sample_count(&self) -> u32 {
+        u32::try_from(self.audio_sample_count).unwrap_or(u32::MAX)
+    }
+
+    pub fn audio_sample_rate_hz(&self) -> u32 {
+        DEFAULT_SAMPLE_RATE_HZ
+    }
+
+    pub fn program_counter(&self) -> u16 {
+        self.core.cpu_state().program_counter
+    }
+
+    pub fn basic_ready(&self) -> bool {
+        self.core.basic_ready()
+    }
+
+    /// 替换一份八列键盘矩阵、双操纵杆和 RESTORE 的宿主快照。
+    ///
+    /// # Errors
+    ///
+    /// 矩阵列数或操纵杆掩码无效时返回 JavaScript Error。
+    pub fn set_host_input(
+        &mut self,
+        pressed_rows_by_column: &[u8],
+        shift_lock_pressed: bool,
+        joystick_port_1_grounded: u8,
+        joystick_port_2_grounded: u8,
+        restore_key_pressed: bool,
+    ) -> Result<(), JsError> {
+        self.core
+            .set_host_input(
+                pressed_rows_by_column,
+                shift_lock_pressed,
+                joystick_port_1_grounded,
+                joystick_port_2_grounded,
+                restore_key_pressed,
+            )
+            .map_err(to_js_error)
+    }
+
+    /// 校验并一次安装一个 `$0801` BASIC PRG，同时排入 `RUN`。
+    ///
+    /// # Errors
+    ///
+    /// 文件无效或 BASIC 尚未就绪时，在写 RAM 前返回 JavaScript Error。
+    pub fn install_basic_prg(&mut self, bytes: &[u8]) -> Result<(), JsError> {
+        self.core
+            .install_basic_prg(bytes)
+            .map(|_| ())
+            .map_err(to_js_error)
     }
 
     /// 在安全边界切换到 Strict。
@@ -417,6 +552,8 @@ fn to_js_error(error: CoreError) -> JsError {
         CoreError::Clock(inner) => JsError::new(&inner.to_string()),
         CoreError::Cpu(inner) => JsError::new(&inner.to_string()),
         CoreError::State(inner) => JsError::new(&inner.to_string()),
+        CoreError::Prg(inner) => JsError::new(&inner.to_string()),
+        timeout @ CoreError::VideoFrameTimeout { .. } => JsError::new(&timeout.to_string()),
         CoreError::Vic(inner) => JsError::new(&inner.to_string()),
     }
 }

@@ -29,7 +29,7 @@ export function AppHeader({
       <div className="app-header__inner">
         <a className="app-title" href="#console" aria-label="返回运行控制台">
           <strong>RetroC64</strong>
-          <span>PAL · 周期级 TypeScript 模拟器</span>
+          <span>PAL · Rust/Wasm Worker 模拟器</span>
         </a>
 
         <div className="header-actions">

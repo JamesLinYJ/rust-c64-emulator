@@ -33,6 +33,12 @@ class FakeMessagePort extends EventTarget {
   emitMetrics(metrics: PcmAudioStreamMetrics): void {
     this.dispatchEvent(new MessageEvent('message', { data: metrics }));
   }
+
+  emitRecycle(buffer: ArrayBuffer, recycleToken: number): void {
+    this.dispatchEvent(
+      new MessageEvent('message', { data: { buffer, recycleToken, type: 'recycle' } }),
+    );
+  }
 }
 
 class FakeAudioWorkletNode implements PcmAudioNode {
@@ -177,10 +183,31 @@ describe('WebAudioOutput', () => {
 
     const commands = node.port.messages as PcmAudioWorkletCommand[];
     expect(commands.map(({ type }) => type)).toEqual(['samples', 'samples', 'clear']);
-    expect(commands[0]).toMatchObject({ samples: first, type: 'samples' });
-    expect(commands[1]).toMatchObject({ samples: second, type: 'samples' });
+    expect(commands[0]).toMatchObject({ buffer: first.buffer, sampleCount: 3, type: 'samples' });
+    expect(commands[1]).toMatchObject({ buffer: second.buffer, sampleCount: 2, type: 'samples' });
     expect(output.streamMetrics.bufferedSamples).toBe(0);
     expect(context.resume).not.toHaveBeenCalled();
+    output.dispose();
+  });
+
+  it('returns transferred Worker PCM ownership only after the worklet copies it', async () => {
+    const context = new FakeAudioContext();
+    context.state = 'running';
+    const { node, output } = createHarness(context);
+    await output.activate();
+    const buffer = new ArrayBuffer(32);
+    const recycle = vi.fn();
+
+    expect(output.enqueueTransfer(buffer, 4, 44_100, recycle)).toBe(true);
+    const command = node.port.messages[0] as PcmAudioWorkletCommand;
+    expect(command).toMatchObject({ buffer, sampleCount: 4, type: 'samples' });
+    if (command.type !== 'samples') throw new Error('Expected a PCM sample command.');
+    expect(recycle).not.toHaveBeenCalled();
+
+    node.port.emitRecycle(buffer, command.recycleToken);
+    expect(recycle).toHaveBeenCalledWith(buffer);
+    node.port.emitRecycle(buffer, command.recycleToken);
+    expect(recycle).toHaveBeenCalledOnce();
     output.dispose();
   });
 
@@ -208,7 +235,11 @@ describe('WebAudioOutput', () => {
 
     const commands = node.port.messages as PcmAudioWorkletCommand[];
     expect(commands.map(({ type }) => type)).toEqual(['samples', 'clear', 'samples']);
-    expect(commands[2]).toMatchObject({ samples: afterBackground, type: 'samples' });
+    expect(commands[2]).toMatchObject({
+      buffer: afterBackground.buffer,
+      sampleCount: 2,
+      type: 'samples',
+    });
     expect(context.addWorkletModule).toHaveBeenCalledOnce();
     expect(context.createPcmNode).toHaveBeenCalledOnce();
     expect(context.resume).toHaveBeenCalledOnce();

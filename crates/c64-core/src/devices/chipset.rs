@@ -18,6 +18,9 @@ use super::cartridge::{Cartridge, CartridgeError};
 use super::cia::{Mos6526, Mos6526Model, Mos6526Timing};
 use super::drive1541::drive::{Commodore1541Drive, Commodore1541DriveError};
 use super::iec::{IecBus, IecLine, IecPort};
+use super::input::{
+    C64HostInput, C64HostInputError, C64HostInputPortState, C64HostInputPortValues,
+};
 use super::reu::{RamExpansionUnit, ReuImageError};
 use super::sid::{
     DEFAULT_SAMPLE_RATE_HZ, NTSC_PROCESSOR_CLOCK_HZ, PAL_PROCESSOR_CLOCK_HZ, Sid, SidModel,
@@ -49,6 +52,7 @@ pub enum C64ChipsetError {
     Drive1541(Commodore1541DriveError),
     Drive1541AlreadyAttached,
     Drive1541NotAttached,
+    HostInput(C64HostInputError),
     Vic(VicError),
 }
 
@@ -74,6 +78,7 @@ impl fmt::Display for C64ChipsetError {
                 formatter.write_str("a Commodore 1541 is already attached")
             }
             Self::Drive1541NotAttached => formatter.write_str("no Commodore 1541 is attached"),
+            Self::HostInput(error) => error.fmt(formatter),
             Self::Vic(error) => error.fmt(formatter),
         }
     }
@@ -105,6 +110,12 @@ impl From<Commodore1541DriveError> for C64ChipsetError {
     }
 }
 
+impl From<C64HostInputError> for C64ChipsetError {
+    fn from(error: C64HostInputError) -> Self {
+        Self::HostInput(error)
+    }
+}
+
 impl From<VicError> for C64ChipsetError {
     fn from(error: VicError) -> Self {
         Self::Vic(error)
@@ -128,6 +139,8 @@ pub struct C64Chipset {
     tape_read_line_high: bool,
     cartridge: Option<Cartridge>,
     reu: Option<RamExpansionUnit>,
+    #[wincode(skip(default_val = C64HostInput::new()))]
+    host_input: C64HostInput,
     processor_port_output: ProcessorPortOutputState,
     last_cpu_read_was_held: bool,
 }
@@ -164,6 +177,7 @@ impl C64Chipset {
             tape_read_line_high: true,
             cartridge: None,
             reu: None,
+            host_input: C64HostInput::new(),
             processor_port_output: ProcessorPortOutputState {
                 direction: 0,
                 output_latch: 0,
@@ -202,6 +216,7 @@ impl C64Chipset {
     pub fn nmi_asserted(&self) -> bool {
         self.nmi_cia.interrupt_pending()
             || self.cartridge.as_ref().is_some_and(Cartridge::nmi_line_low)
+            || self.host_input.nmi_asserted()
     }
 
     pub const fn processor_port_output(&self) -> ProcessorPortOutputState {
@@ -262,6 +277,34 @@ impl C64Chipset {
 
     pub const fn reu_mut(&mut self) -> Option<&mut RamExpansionUnit> {
         self.reu.as_mut()
+    }
+
+    pub const fn host_input(&self) -> &C64HostInput {
+        &self.host_input
+    }
+
+    /// 原子替换浏览器或原生前端提供的键盘、操纵杆与 RESTORE 快照。
+    ///
+    /// # Errors
+    ///
+    /// 键盘列数或操纵杆数字线掩码无效时拒绝整个快照。
+    pub fn set_host_input(
+        &mut self,
+        pressed_rows_by_column: &[u8],
+        shift_lock_pressed: bool,
+        joystick_port_1_grounded: u8,
+        joystick_port_2_grounded: u8,
+        restore_key_pressed: bool,
+    ) -> Result<(), C64ChipsetError> {
+        self.host_input.set_state(
+            pressed_rows_by_column,
+            shift_lock_pressed,
+            joystick_port_1_grounded,
+            joystick_port_2_grounded,
+            restore_key_pressed,
+        )?;
+        self.synchronize_light_pen_input();
+        Ok(())
     }
 
     pub(crate) fn state_matches_config(
@@ -388,6 +431,7 @@ impl C64Chipset {
         let vic_result = self.clock_vic(memory);
         self.clock_sid();
         let drive_result = self.clock_drive1541();
+        self.clock_host_input();
         datasette_result?;
         vic_result?;
         drive_result
@@ -424,6 +468,10 @@ impl C64Chipset {
         self.sid.clock_cycle();
     }
 
+    pub fn clock_host_input(&mut self) {
+        self.host_input.clock_cycle();
+    }
+
     pub(crate) fn clock_drive1541(&mut self) -> Result<(), C64ChipsetError> {
         let result = if let Some(drive) = self.drive1541.as_mut() {
             drive.clock_host_cycle(&mut self.iec_bus).map(|_| ())
@@ -451,6 +499,7 @@ impl C64Chipset {
         if let Some(reu) = self.reu.as_mut() {
             reu.reset();
         }
+        self.host_input.reset_restore_circuit();
         let release_result = self.set_iec_reset_asserted(false);
         self.synchronize_light_pen_input();
         self.synchronize_cia1_flag_input();
@@ -491,9 +540,24 @@ impl C64Chipset {
     }
 
     fn synchronize_light_pen_input(&mut self) {
-        self.vic.set_light_pen_input_high(
-            self.irq_cia.port_b_output_pins() & CIA1_PORT_B_LIGHT_PEN_INPUT != 0,
-        );
+        let inputs = self.cia1_port_inputs();
+        self.vic
+            .set_light_pen_input_high(inputs.port_b & CIA1_PORT_B_LIGHT_PEN_INPUT != 0);
+    }
+
+    fn cia1_port_inputs(&self) -> C64HostInputPortValues {
+        self.host_input.resolve_port_inputs(
+            C64HostInputPortState {
+                data_direction: self.irq_cia.port_a_data_direction(),
+                external_input_pins: !self.host_input.joystick_port_2_grounded(),
+                output_pins: self.irq_cia.port_a_output_pins(),
+            },
+            C64HostInputPortState {
+                data_direction: self.irq_cia.port_b_data_direction(),
+                external_input_pins: !self.host_input.joystick_port_1_grounded(),
+                output_pins: self.irq_cia.port_b_output_pins(),
+            },
+        )
     }
 
     fn pulse_tape_read_line(&mut self) {
@@ -612,7 +676,10 @@ impl C64BusDevices for C64Chipset {
         match address >> 8 {
             0xd0..=0xd3 => self.vic.read_register(address),
             0xd4..=0xd7 => self.sid.read(address),
-            0xdc => self.irq_cia.read_pulled_up(address),
+            0xdc => {
+                let inputs = self.cia1_port_inputs();
+                self.irq_cia.read(address, inputs.port_a, inputs.port_b)
+            }
             0xdd => self
                 .nmi_cia
                 .read(address, self.cia2_port_a_external_inputs(), 0xff),

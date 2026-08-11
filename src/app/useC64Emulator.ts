@@ -10,16 +10,54 @@
 
 import { useCallback, useEffect, useRef, useState, type RefObject } from 'react';
 
-import type { C64Emulator, C64EmulatorOptions } from '../core/C64Emulator';
+import type {
+  C64EmulatorOptions,
+  C64ProgramLoadOptions,
+  C64RemoteProgramLoadOptions,
+} from '../core/C64Emulator';
 import type { BundledProgramDescriptor } from '../media/BundledProgramCatalog';
-import { PRG_START_MODE } from '../media/PrgLoader';
+import { PRG_START_MODE, type LoadedProgram } from '../media/PrgLoader';
+import type { BrowserC64Input } from '../platform/BrowserC64Input';
 import type { WebAudioOutputStatus } from '../platform/WebAudioOutput';
 import { hex } from '../shared/numbers';
 import { PAL_VIDEO_STANDARD } from '../video/palVideoStandard';
 
 export type EmulatorPhase = 'error' | 'loading' | 'paused' | 'running';
 export type MessageTone = 'error' | 'normal';
-export type C64EmulatorFactory = (options: C64EmulatorOptions) => Promise<C64Emulator>;
+
+interface C64EmulatorBackendEvents {
+  readonly audioState: WebAudioOutputStatus;
+  readonly error: Error;
+  readonly frame: { readonly frameNumber: number; readonly renderTime: number };
+  readonly programLoaded: LoadedProgram;
+  readonly state: 'paused' | 'running';
+}
+
+export interface C64EmulatorBackend {
+  readonly audioStatus: WebAudioOutputStatus;
+  readonly basicReady: boolean;
+  readonly input: Pick<BrowserC64Input, 'releaseJoystickSource' | 'setJoystickSourceLines'>;
+  readonly registers: { readonly programCounter: number };
+  readonly state: 'paused' | 'running';
+  dispose(): void;
+  enableAudio(): Promise<WebAudioOutputStatus>;
+  loadProgram(url: string, options?: C64RemoteProgramLoadOptions): Promise<LoadedProgram>;
+  loadProgramBytesAsync(
+    input: ArrayBuffer | Uint8Array,
+    options?: C64ProgramLoadOptions,
+    signal?: AbortSignal,
+  ): Promise<LoadedProgram>;
+  on<EventName extends keyof C64EmulatorBackendEvents>(
+    eventName: EventName,
+    listener: (payload: C64EmulatorBackendEvents[EventName]) => void,
+  ): () => void;
+  reset(): void;
+  start(): void;
+  stepFrame(): void;
+  toggle(): void;
+}
+
+export type C64EmulatorFactory = (options: C64EmulatorOptions) => Promise<C64EmulatorBackend>;
 
 interface EmulatorViewState {
   readonly bootComplete: boolean;
@@ -76,8 +114,8 @@ export function describeInitializationFailure(error: unknown): string {
 }
 
 const createBrowserC64Emulator: C64EmulatorFactory = async (options) => {
-  const { C64Emulator } = await import('../core/C64Emulator');
-  return C64Emulator.create(options);
+  const { C64WorkerEmulator } = await import('../platform/C64WorkerEmulator');
+  return C64WorkerEmulator.create(options);
 };
 
 export function useC64Emulator(
@@ -86,7 +124,7 @@ export function useC64Emulator(
   createEmulator: C64EmulatorFactory = createBrowserC64Emulator,
 ): C64EmulatorController {
   const createEmulatorRef = useRef(createEmulator);
-  const emulatorRef = useRef<C64Emulator | null>(null);
+  const emulatorRef = useRef<C64EmulatorBackend | null>(null);
   const bootCompleteRef = useRef(false);
   const programRequestRef = useRef<AbortController | null>(null);
   const operationIdRef = useRef(0);
@@ -128,7 +166,7 @@ export function useC64Emulator(
 
     const initialization = new AbortController();
     let disposed = false;
-    let emulator: C64Emulator | null = null;
+    let emulator: C64EmulatorBackend | null = null;
     let framesSinceUpdate = 0;
     let lastFrameUpdate = performance.now();
     const renderTimes: number[] = [];

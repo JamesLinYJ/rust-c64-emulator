@@ -13,9 +13,13 @@ import { createRequire } from 'node:module';
 import path from 'node:path';
 
 interface C64VmInstance {
+  audio_sample_count(): number;
+  audio_sample_rate_hz(): number;
+  audio_samples_ptr(): number;
   attach_reu(sizeKib: number): void;
   attach_reu_image(sizeKib: number, image: Uint8Array): void;
   awaiting_auto_calibration(): boolean;
+  basic_ready(): boolean;
   cartridge_attached(): boolean;
   cartridge_kind(): number;
   current_slot(): number;
@@ -29,11 +33,17 @@ interface C64VmInstance {
   export_easyflash_high(): Uint8Array;
   export_easyflash_low(): Uint8Array;
   export_reu_ram(): Uint8Array;
+  frame_generation_low(): number;
+  frame_height(): number;
+  frame_pixels_len(): number;
+  frame_pixels_ptr(): number;
+  frame_width(): number;
   free(): void;
   load_state(bytes: Uint8Array): void;
   lock_auto_turbo(resolvedSlotsPerSystemCycle: number): void;
   memory_generation_low(): number;
   insert_blank_tap(videoStandard: number): void;
+  install_basic_prg(bytes: Uint8Array): void;
   insert_crt(bytes: Uint8Array, easyFlashJumperInstalled: boolean): void;
   insert_tap(bytes: Uint8Array, legacyV0OverflowPulseCycles: number): void;
   read_base_ram(address: number): number;
@@ -43,8 +53,16 @@ interface C64VmInstance {
   reu_size_kib(): number;
   reset(): void;
   run_cpu_slots(slots: number): number;
+  run_until_next_frame(): number;
   save_state(): Uint8Array;
   set_manual_turbo(slotsPerSystemCycle: number): void;
+  set_host_input(
+    pressedRowsByColumn: Uint8Array,
+    shiftLockPressed: boolean,
+    joystickPort1Grounded: number,
+    joystickPort2Grounded: number,
+    restoreKeyPressed: boolean,
+  ): void;
   tape_mounted(): boolean;
   tape_motor_active(): boolean;
   tape_play(): void;
@@ -60,7 +78,16 @@ interface C64VmInstance {
   write_base_ram(address: number, value: number): void;
 }
 
-type C64VmConstructor = new (profile: number, videoStandard: number) => C64VmInstance;
+interface C64VmConstructor {
+  new (profile: number, videoStandard: number): C64VmInstance;
+  withFirmware(
+    profile: number,
+    videoStandard: number,
+    basic: Uint8Array,
+    character: Uint8Array,
+    kernal: Uint8Array,
+  ): C64VmInstance;
+}
 
 interface C64WasmModule {
   readonly C64Vm: C64VmConstructor;
@@ -73,6 +100,25 @@ assertC64WasmModule(loadedModule);
 
 assert.throws(() => new loadedModule.C64Vm(255, 0), /profile/u);
 assert.throws(() => new loadedModule.C64Vm(0, 255), /视频制式/u);
+assert.throws(
+  () =>
+    loadedModule.C64Vm.withFirmware(
+      0,
+      0,
+      new Uint8Array(0x1fff),
+      new Uint8Array(0x1000),
+      new Uint8Array(0x2000),
+    ),
+  /BASIC ROM must contain 8192 bytes/u,
+);
+const production = loadedModule.C64Vm.withFirmware(
+  0,
+  0,
+  new Uint8Array(0x2000),
+  new Uint8Array(0x1000),
+  new Uint8Array(0x2000),
+);
+production.free();
 
 const source = new loadedModule.C64Vm(0, 0);
 const restored = new loadedModule.C64Vm(0, 0);
@@ -84,10 +130,44 @@ try {
   assert.equal(source.elapsed_system_cycles_high(), 0);
   assert.equal(source.current_slot(), 0);
 
+  assert.throws(
+    () => source.set_host_input(new Uint8Array(7), false, 0, 0, false),
+    /exactly 8 columns/u,
+  );
+  assert.throws(
+    () => source.set_host_input(new Uint8Array(8), false, 0x20, 0, false),
+    /five-bit digital mask/u,
+  );
+  source.set_host_input(Uint8Array.of(0, 0x04, 0, 0, 0, 0, 0, 0), false, 0x10, 0x01, true);
+
+  const frameGenerationBefore = source.frame_generation_low();
+  assert.ok(source.run_until_next_frame() > 0);
+  assert.notEqual(source.frame_generation_low(), frameGenerationBefore);
+  assert.equal(source.frame_width(), 403);
+  assert.equal(source.frame_height(), 284);
+  assert.equal(source.frame_pixels_len(), 403 * 284);
+  assert.equal(source.audio_sample_rate_hz(), 44_100);
+  assert.ok(source.audio_sample_count() > 0);
+  assert.ok(source.frame_pixels_ptr() > 0);
+  assert.ok(source.audio_samples_ptr() > 0);
+
   const generationBeforeHostWrite = source.memory_generation_low();
   source.write_base_ram(0xc000, 0x5a);
   assert.equal(source.read_base_ram(0xc000), 0x5a);
   assert.equal((source.memory_generation_low() - generationBeforeHostWrite) >>> 0, 1);
+
+  source.write_base_ram(0x002b, 0x01);
+  source.write_base_ram(0x002c, 0x08);
+  source.write_base_ram(0x0289, 10);
+  assert.throws(() => source.install_basic_prg(Uint8Array.of(0x00, 0x20, 0xea)), /\$0801/u);
+  source.install_basic_prg(Uint8Array.of(0x01, 0x08, 0x0b, 0x08, 0x00, 0x00));
+  assert.equal(source.read_base_ram(0x0801), 0x0b);
+  assert.equal(source.read_base_ram(0x00c6), 4);
+
+  for (const [offset, value] of Uint8Array.of(0x12, 0x05, 0x01, 0x04, 0x19, 0x2e).entries()) {
+    source.write_base_ram(0x0400 + offset, value);
+  }
+  assert.equal(source.basic_ready(), true);
 
   assert.throws(() => source.insert_crt(Uint8Array.of(0), false), /CRT image/u);
   assert.equal(source.cartridge_attached(), false, '失败的 CRT 插入必须保持空插槽');

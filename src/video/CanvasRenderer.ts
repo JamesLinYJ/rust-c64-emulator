@@ -38,6 +38,16 @@ export class CanvasRenderer {
     this.surface.frameBuffer.writeRow(visibleRow, pixels);
   }
 
+  presentPixels(pixels: Uint32Array): void {
+    if (pixels.length !== this.surface.frameBuffer.pixels.length) {
+      throw new RangeError(
+        `Frame contains ${pixels.length} pixels; expected ${this.surface.frameBuffer.pixels.length}.`,
+      );
+    }
+    this.surface.frameBuffer.pixels.set(pixels);
+    this.surface.present();
+  }
+
   presentFrame(): void {
     this.surface.present();
   }

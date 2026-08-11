@@ -25,7 +25,14 @@ use crate::{
         tape::{DatasetteError, DatasetteTape, DatasetteTransport},
         vic::VicError,
     },
-    media::tap::{TapImage, TapImageError, TapVideoStandard, WritableTapImage},
+    media::{
+        prg::{
+            BASIC_KEYBOARD_BUFFER_COUNT, BASIC_KEYBOARD_BUFFER_START, BASIC_RUN_COMMAND,
+            BASIC_RUN_COMMAND_LENGTH, BASIC_TEXT_END_POINTERS, BASIC_TEXT_START_POINTERS,
+            BasicPrgImage, LoadedPrg, PrgError,
+        },
+        tap::{TapImage, TapImageError, TapVideoStandard, WritableTapImage},
+    },
     memory::{CoherentMemory, MemoryWriteSource},
     state::{self, DecodedState, StateError},
 };
@@ -146,6 +153,79 @@ impl C64Core {
 
     pub const fn devices(&self) -> &C64Chipset {
         &self.devices
+    }
+
+    /// 原子替换前端提供的键盘矩阵、双控制口与 RESTORE 快照。
+    ///
+    /// # Errors
+    ///
+    /// 快照的矩阵列数或操纵杆掩码无效时拒绝更新。
+    pub fn set_host_input(
+        &mut self,
+        pressed_rows_by_column: &[u8],
+        shift_lock_pressed: bool,
+        joystick_port_1_grounded: u8,
+        joystick_port_2_grounded: u8,
+        restore_key_pressed: bool,
+    ) -> Result<(), CoreError> {
+        self.devices.set_host_input(
+            pressed_rows_by_column,
+            shift_lock_pressed,
+            joystick_port_1_grounded,
+            joystick_port_2_grounded,
+            restore_key_pressed,
+        )?;
+        Ok(())
+    }
+
+    pub fn basic_ready(&self) -> bool {
+        const READY_SCREEN_CODES: [u8; 6] = [0x12, 0x05, 0x01, 0x04, 0x19, 0x2e];
+        const SCREEN_START: u16 = 0x0400;
+        const SCREEN_END_EXCLUSIVE: u16 = 0x07e8;
+        const READY_SCREEN_CODE_COUNT: u16 = 6;
+        let final_start = SCREEN_END_EXCLUSIVE - READY_SCREEN_CODE_COUNT;
+        (SCREEN_START..=final_start).any(|start| {
+            (start..)
+                .zip(READY_SCREEN_CODES)
+                .all(|(address, expected)| self.read_base_ram(address) == expected)
+        })
+    }
+
+    /// 校验并一次性安装一个 `$0801` BASIC PRG，同时排入 PETSCII `RUN`。
+    ///
+    /// # Errors
+    ///
+    /// 文件、地址范围或当前 BASIC 键盘缓冲状态无效时，在写 RAM 前返回错误。
+    pub fn install_basic_prg(&mut self, bytes: &[u8]) -> Result<LoadedPrg, CoreError> {
+        let image = BasicPrgImage::parse(bytes)?;
+        let keyboard_buffer_used =
+            BasicPrgImage::validate_basic_environment(|address| self.read_base_ram(address))?;
+
+        for (address, value) in
+            (image.load_address..image.end_address).zip(image.payload.iter().copied())
+        {
+            self.write_base_ram(address, value, MemoryWriteSource::HostLoader);
+        }
+        for pointer in BASIC_TEXT_START_POINTERS {
+            self.write_base_ram_word(pointer, image.load_address);
+        }
+        for pointer in BASIC_TEXT_END_POINTERS {
+            self.write_base_ram_word(pointer, image.end_address);
+        }
+        let keyboard_buffer_start = BASIC_KEYBOARD_BUFFER_START + u16::from(keyboard_buffer_used);
+        for (address, value) in (keyboard_buffer_start..).zip(BASIC_RUN_COMMAND) {
+            self.write_base_ram(address, value, MemoryWriteSource::HostLoader);
+        }
+        self.write_base_ram(
+            BASIC_KEYBOARD_BUFFER_COUNT,
+            keyboard_buffer_used + BASIC_RUN_COMMAND_LENGTH,
+            MemoryWriteSource::HostLoader,
+        );
+        Ok(LoadedPrg {
+            load_address: image.load_address,
+            end_address: image.end_address,
+            size: image.payload.len(),
+        })
     }
 
     /// Parse and attach one CRT cartridge at a system-cycle boundary.
@@ -652,6 +732,30 @@ impl C64Core {
         Ok(elapsed_cycles)
     }
 
+    /// 推进到下一次完整 VIC 帧提交，供 Worker 一次交换整帧和同时间段 PCM。
+    ///
+    /// # Errors
+    ///
+    /// 核心执行失败，或在调用方给定的系统周期上限内没有提交新帧时返回错误。
+    pub fn run_until_next_video_frame(
+        &mut self,
+        maximum_system_cycles: u64,
+    ) -> Result<u64, CoreError> {
+        let initial_generation = self.devices.vic().frame_generation();
+        let mut elapsed_system_cycles = 0_u64;
+        while self.devices.vic().frame_generation() == initial_generation
+            || self.clock.timestamp().slot != 0
+        {
+            if elapsed_system_cycles >= maximum_system_cycles {
+                return Err(CoreError::VideoFrameTimeout {
+                    maximum_system_cycles,
+                });
+            }
+            elapsed_system_cycles = elapsed_system_cycles.saturating_add(self.run_cpu_slots(1)?);
+        }
+        Ok(elapsed_system_cycles)
+    }
+
     fn service_reu_dma(&mut self) -> Result<u64, CoreError> {
         let mut elapsed_cycles = 0;
         while self.devices.reu().is_some_and(RamExpansionUnit::dma_active) {
@@ -727,6 +831,16 @@ impl C64Core {
 
     pub fn write_base_ram(&mut self, address: u16, value: u8, source: MemoryWriteSource) {
         self.address_space.write_base_ram(address, value, source);
+    }
+
+    pub fn pull_sid_samples_into(&mut self, destination: &mut [f32]) -> usize {
+        self.devices.sid_mut().pull_samples_into(destination)
+    }
+
+    fn write_base_ram_word(&mut self, address: u16, value: u16) {
+        let [low, high] = value.to_le_bytes();
+        self.write_base_ram(address, low, MemoryWriteSource::HostLoader);
+        self.write_base_ram(address + 1, high, MemoryWriteSource::HostLoader);
     }
 
     pub fn save_state(&self) -> Vec<u8> {
@@ -931,6 +1045,7 @@ impl<'a> ClockedCpuBus<'a> {
             .update(self.devices.irq_asserted(), sampled_cycle);
         self.nmi_line
             .update(self.devices.nmi_asserted(), sampled_cycle);
+        self.devices.clock_host_input();
     }
 
     fn finish_held_system_cycle(&mut self, cpu_read_address: u16) {
@@ -1005,6 +1120,8 @@ pub enum CoreError {
     Clock(VirtualClockError),
     Cpu(Cpu6510Error),
     State(StateError),
+    Prg(PrgError),
+    VideoFrameTimeout { maximum_system_cycles: u64 },
     Vic(VicError),
 }
 
@@ -1047,6 +1164,12 @@ impl From<StateError> for CoreError {
     }
 }
 
+impl From<PrgError> for CoreError {
+    fn from(error: PrgError) -> Self {
+        Self::Prg(error)
+    }
+}
+
 impl From<Cpu6510Error> for CoreError {
     fn from(error: Cpu6510Error) -> Self {
         Self::Cpu(error)
@@ -1067,6 +1190,13 @@ impl fmt::Display for CoreError {
             Self::Clock(error) => error.fmt(formatter),
             Self::Cpu(error) => error.fmt(formatter),
             Self::State(error) => error.fmt(formatter),
+            Self::Prg(error) => error.fmt(formatter),
+            Self::VideoFrameTimeout {
+                maximum_system_cycles,
+            } => write!(
+                formatter,
+                "VIC did not commit a frame within {maximum_system_cycles} system cycles"
+            ),
             Self::Vic(error) => error.fmt(formatter),
         }
     }

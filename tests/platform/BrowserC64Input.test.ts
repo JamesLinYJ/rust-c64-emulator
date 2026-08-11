@@ -62,6 +62,19 @@ function scanPortB(keyboard: C64KeyboardMatrix, portAOutput: number): number {
 }
 
 describe('BrowserC64Input', () => {
+  it('exports one detached eight-column snapshot for the coarse Wasm input boundary', () => {
+    const keyboard = new C64KeyboardMatrix();
+    keyboard.setKeyState('KeyA', true);
+    keyboard.setKeyState('ShiftLock', true);
+
+    const first = keyboard.snapshot();
+    expect(first.rowsByColumn).toEqual(Uint8Array.of(0, 0x84, 0, 0, 0, 0, 0, 0));
+    expect(first.shiftLockPressed).toBe(true);
+
+    first.rowsByColumn.fill(0xff);
+    expect(keyboard.snapshot().rowsByColumn).toEqual(Uint8Array.of(0, 0x84, 0, 0, 0, 0, 0, 0));
+  });
+
   it('maps a direction key to only the selected joystick port', () => {
     const { controlPorts, input, keyboard, target } = createInput(2);
 
