@@ -8,6 +8,7 @@
 //   Author:     OpenAI Codex
 // --------------------------------------------------------------------------
 
+pub mod clock;
 pub mod d64_gcr;
 pub mod disk_via;
 pub mod gcr;
