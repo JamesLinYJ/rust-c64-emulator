@@ -1007,27 +1007,22 @@ impl C64Core {
                 let c64_value = if let Some((access, address, value)) = bus_operation {
                     self.devices
                         .clock_sid_cycles(core::mem::take(pending_sid_cycles));
-                    let response = {
-                        let mut bus = ClockedCpuBus::<STRICT>::new(
+                    let (request, descriptor, response) = {
+                        let mut bus = ReuDmaBus::new(
                             &mut self.address_space,
                             &mut self.devices,
-                            &mut self.clock,
-                            &mut self.irq_line,
-                            &mut self.nmi_line,
-                            diagnostics,
-                            pending_sid_cycles,
+                            self.clock.timestamp(),
+                            self.clock.next_external_event(),
                         );
-                        let (request, descriptor) =
-                            bus.bus_request(BusMaster::Reu, access, address, value);
+                        let (request, descriptor) = bus.request(access, address, value);
                         let response = bus.transact(request);
-                        bus.diagnostics
-                            .record_bus_bridge_transaction(BusBridgeTransaction {
-                                request,
-                                domain: descriptor.domain,
-                                response,
-                            });
-                        response
+                        (request, descriptor, response)
                     };
+                    diagnostics.record_bus_bridge_transaction(BusBridgeTransaction {
+                        request,
+                        domain: descriptor.domain,
+                        response,
+                    });
                     diagnostics.reu_dma_bus_cycles = diagnostics.reu_dma_bus_cycles.wrapping_add(1);
                     matches!(access, BusAccessKind::Read).then_some(response.value)
                 } else {
@@ -1187,6 +1182,102 @@ impl C64Core {
     }
 }
 
+/// REU-owned C64 bus access kept separate from the CPU's latency-sensitive bus.
+///
+/// The REU only reaches this bridge while DMA is active. Keeping its request
+/// classification and transaction dispatch out of `ClockedCpuBus` lets the
+/// normal CPU path remain specialized for `BusMaster::Cpu`.
+struct ReuDmaBus<'a> {
+    address_space: &'a mut C64AddressSpace,
+    devices: &'a mut C64Chipset,
+    timestamp: VirtualTimestamp,
+    next_external_event: VirtualTimestamp,
+}
+
+impl<'a> ReuDmaBus<'a> {
+    fn new(
+        address_space: &'a mut C64AddressSpace,
+        devices: &'a mut C64Chipset,
+        timestamp: VirtualTimestamp,
+        next_external_event: VirtualTimestamp,
+    ) -> Self {
+        Self {
+            address_space,
+            devices,
+            timestamp,
+            next_external_event,
+        }
+    }
+
+    fn request(
+        &mut self,
+        access: BusAccessKind,
+        address: u16,
+        value: u8,
+    ) -> (BusRequest, PageDescriptor) {
+        self.address_space
+            .synchronize_cpu_mapping(self.devices.cartridge_lines());
+        let mut descriptor = if address <= 0x0001 {
+            PageDescriptor::FAST_RAM
+        } else {
+            match access {
+                BusAccessKind::Read => self.address_space.memory().classify_read(address),
+                BusAccessKind::Write => self.address_space.memory().classify_write(address),
+            }
+        };
+        if descriptor.target == PhysicalTarget::Cartridge && address >> 8 == 0xdf {
+            descriptor =
+                PageDescriptor::bridged(PhysicalTarget::Reu, matches!(access, BusAccessKind::Read));
+        }
+        (
+            BusRequest {
+                timestamp: self.timestamp,
+                master: BusMaster::Reu,
+                access,
+                address: u32::from(address),
+                value,
+                target: descriptor.target,
+            },
+            descriptor,
+        )
+    }
+}
+
+impl BusBridge for ReuDmaBus<'_> {
+    fn transact(&mut self, request: BusRequest) -> BusResponse {
+        debug_assert_eq!(request.master, BusMaster::Reu);
+        debug_assert_eq!(request.timestamp, self.timestamp);
+        let Ok(address) = u16::try_from(request.address) else {
+            return BusResponse {
+                value: self.devices.open_bus_value(),
+                ..BusResponse::default()
+            };
+        };
+        let mapping_before = self.address_space.memory().mapping_generation();
+        let value = match request.access {
+            BusAccessKind::Read => self.address_space.reu_dma_bus(self.devices).read(address),
+            BusAccessKind::Write => {
+                self.address_space
+                    .reu_dma_bus(self.devices)
+                    .write(address, request.value);
+                request.value
+            }
+        };
+        self.address_space
+            .synchronize_cpu_mapping(self.devices.cartridge_lines());
+        BusResponse {
+            value,
+            wait_system_cycles: 0,
+            mapping_changed: mapping_before != self.address_space.memory().mapping_generation(),
+            dma_requested: self.devices.reu().is_some_and(RamExpansionUnit::dma_active),
+        }
+    }
+
+    fn next_external_event(&self) -> Option<VirtualTimestamp> {
+        Some(self.next_external_event)
+    }
+}
+
 struct ClockedCpuBus<'a, const STRICT: bool> {
     address_space: &'a mut C64AddressSpace,
     devices: &'a mut C64Chipset,
@@ -1325,9 +1416,8 @@ impl<'a, const STRICT: bool> ClockedCpuBus<'a, STRICT> {
         }
     }
 
-    fn bus_request(
+    fn cpu_bus_request(
         &mut self,
-        master: BusMaster,
         access: BusAccessKind,
         address: u16,
         value: u8,
@@ -1338,16 +1428,13 @@ impl<'a, const STRICT: bool> ClockedCpuBus<'a, STRICT> {
             BusAccessKind::Read => self.address_space.memory().classify_read(address),
             BusAccessKind::Write => self.address_space.memory().classify_write(address),
         };
-        if master == BusMaster::Reu && address <= 0x0001 {
-            descriptor = PageDescriptor::FAST_RAM;
-        } else if self.devices.reu().is_some()
+        if self.devices.reu().is_some()
             && descriptor.target == PhysicalTarget::Cartridge
             && address >> 8 == 0xdf
         {
             descriptor =
                 PageDescriptor::bridged(PhysicalTarget::Reu, matches!(access, BusAccessKind::Read));
-        } else if master == BusMaster::Cpu
-            && self.devices.reu().is_some()
+        } else if self.devices.reu().is_some()
             && matches!(access, BusAccessKind::Write)
             && address == 0xff00
         {
@@ -1356,7 +1443,7 @@ impl<'a, const STRICT: bool> ClockedCpuBus<'a, STRICT> {
         (
             BusRequest {
                 timestamp: self.clock.timestamp(),
-                master,
+                master: BusMaster::Cpu,
                 access,
                 address: u32::from(address),
                 value,
@@ -1369,6 +1456,7 @@ impl<'a, const STRICT: bool> ClockedCpuBus<'a, STRICT> {
 
 impl<const STRICT: bool> BusBridge for ClockedCpuBus<'_, STRICT> {
     fn transact(&mut self, request: BusRequest) -> BusResponse {
+        debug_assert_eq!(request.master, BusMaster::Cpu);
         debug_assert_eq!(request.timestamp, self.clock.timestamp());
         let Ok(address) = u16::try_from(request.address) else {
             return BusResponse {
@@ -1377,44 +1465,28 @@ impl<const STRICT: bool> BusBridge for ClockedCpuBus<'_, STRICT> {
             };
         };
         let mapping_before = self.address_space.memory().mapping_generation();
-        let value = match request.master {
-            BusMaster::Cpu => match request.access {
-                BusAccessKind::Read => {
-                    if let Some((passive_address, value)) = self.passive_cpu_read.take()
-                        && passive_address == address
-                    {
-                        value
+        let value = match request.access {
+            BusAccessKind::Read => {
+                if let Some((passive_address, value)) = self.passive_cpu_read.take()
+                    && passive_address == address
+                {
+                    value
+                } else {
+                    let mut bus = if self.board_inputs_current {
+                        self.address_space.cpu_bus_after_passive_read(self.devices)
                     } else {
-                        let mut bus = if self.board_inputs_current {
-                            self.address_space.cpu_bus_after_passive_read(self.devices)
-                        } else {
-                            self.address_space.cpu_bus(self.devices)
-                        };
-                        bus.read(address)
-                    }
+                        self.address_space.cpu_bus(self.devices)
+                    };
+                    bus.read(address)
                 }
-                BusAccessKind::Write => {
-                    self.address_space
-                        .cpu_bus(self.devices)
-                        .write(address, request.value);
-                    request.value
-                }
-            },
-            BusMaster::Reu => match request.access {
-                BusAccessKind::Read => self.address_space.reu_dma_bus(self.devices).read(address),
-                BusAccessKind::Write => {
-                    self.address_space
-                        .reu_dma_bus(self.devices)
-                        .write(address, request.value);
-                    request.value
-                }
-            },
-            BusMaster::Vic | BusMaster::EnhancedDma | BusMaster::Cartridge => {
-                unreachable!("unsupported bus master for the C64 CPU address bridge")
+            }
+            BusAccessKind::Write => {
+                self.address_space
+                    .cpu_bus(self.devices)
+                    .write(address, request.value);
+                request.value
             }
         };
-        self.address_space
-            .synchronize_cpu_mapping(self.devices.cartridge_lines());
         BusResponse {
             value,
             wait_system_cycles: 0,
@@ -1458,8 +1530,7 @@ impl<const STRICT: bool> CpuBus for ClockedCpuBus<'_, STRICT> {
             }
         } else {
             self.board_inputs_current = board_inputs_current;
-            let (request, descriptor) = self.bus_request(
-                BusMaster::Cpu,
+            let (request, descriptor) = self.cpu_bus_request(
                 BusAccessKind::Read,
                 address,
                 self.address_space.cpu_data_bus_latch(),
@@ -1501,8 +1572,7 @@ impl<const STRICT: bool> CpuBus for ClockedCpuBus<'_, STRICT> {
                 .cpu_bus(self.devices)
                 .write(address, value);
         } else {
-            let (request, descriptor) =
-                self.bus_request(BusMaster::Cpu, BusAccessKind::Write, address, value);
+            let (request, descriptor) = self.cpu_bus_request(BusAccessKind::Write, address, value);
             let response = self.transact(request);
             self.diagnostics
                 .record_bus_bridge_transaction(BusBridgeTransaction {
