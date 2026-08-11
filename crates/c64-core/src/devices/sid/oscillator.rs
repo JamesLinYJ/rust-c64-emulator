@@ -154,11 +154,7 @@ impl SidOscillator {
 
     pub fn set_pulse_width(&mut self, pulse_width: u16) {
         self.pulse_width_register = pulse_width & PULSE_WIDTH_MASK;
-        self.pulse_output = if (self.accumulator >> 12) >= u32::from(self.pulse_width_register) {
-            PHASE_WAVEFORM_MASK
-        } else {
-            0
-        };
+        self.update_pulse_output();
     }
 
     pub const fn control(&self) -> u8 {
@@ -171,6 +167,15 @@ impl SidOscillator {
 
     pub const fn oscillator_readback(&self) -> u8 {
         (self.oscillator_readback >> 4).to_le_bytes()[0]
+    }
+
+    pub(crate) const fn clock_is_quiescent(&self) -> bool {
+        self.frequency_register == 0
+            && self.waveform_selection == 0
+            && self.floating_output_cycles == 0
+            && self.noise_shift_pipeline == 0
+            && !self.state_flag(STATE_TEST_ENABLED)
+            && !self.state_flag(STATE_MSB_RISING)
     }
 
     /// `/RES` 清除寄存器与数字控制管线，但不连接相位累加器或 8580 tri/saw 管线。
@@ -265,6 +270,11 @@ impl SidOscillator {
             return;
         }
 
+        if self.frequency_register == 0 && self.noise_shift_pipeline == 0 {
+            self.set_state_flag(STATE_MSB_RISING, false);
+            return;
+        }
+
         let previous_accumulator = self.accumulator;
         let next_accumulator = previous_accumulator
             .wrapping_add(u32::from(self.frequency_register))
@@ -285,6 +295,7 @@ impl SidOscillator {
 
     pub fn reset_accumulator_for_sync(&mut self) {
         self.accumulator = 0;
+        self.update_pulse_output();
     }
 
     pub fn update_waveform_output(&mut self) {
@@ -292,6 +303,14 @@ impl SidOscillator {
     }
 
     pub fn update_waveform_output_with_sync_source(&mut self, sync_source_accumulator: u32) {
+        if self.waveform_selection == 0
+            && self.floating_output_cycles == 0
+            && self.frequency_register == 0
+            && self.noise_shift_pipeline == 0
+        {
+            return;
+        }
+
         if self.waveform_selection != 0 {
             let phase_index = low_u16(
                 (self.accumulator
@@ -343,6 +362,10 @@ impl SidOscillator {
             }
         }
 
+        self.update_pulse_output();
+    }
+
+    fn update_pulse_output(&mut self) {
         self.pulse_output = if (self.accumulator >> 12) >= u32::from(self.pulse_width_register) {
             PHASE_WAVEFORM_MASK
         } else {
@@ -541,6 +564,28 @@ mod tests {
             reset.oscillator_readback(),
             uninterrupted.oscillator_readback()
         );
+    }
+
+    #[test]
+    fn zero_frequency_clocking_keeps_the_digital_state_stable() {
+        let mut oscillator = SidOscillator::new(SidModel::Mos6581);
+        let expected = oscillator.clone();
+
+        for _ in 0..4_096 {
+            oscillator.clock_cycle();
+            oscillator.update_waveform_output();
+        }
+
+        assert_eq!(oscillator, expected);
+    }
+
+    #[test]
+    fn sync_reset_updates_a_static_pulse_comparator() {
+        let mut oscillator = SidOscillator::new(SidModel::Mos6581);
+        oscillator.set_pulse_width(0x0800);
+        oscillator.reset_accumulator_for_sync();
+
+        assert_eq!(oscillator.pulse_output, 0);
     }
 
     #[test]

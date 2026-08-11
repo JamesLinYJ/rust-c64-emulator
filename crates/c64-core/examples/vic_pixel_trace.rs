@@ -9,13 +9,16 @@
 // --------------------------------------------------------------------------
 
 use std::error::Error;
-use std::io::{self, Read};
+use std::io;
 
 use c64_core::devices::vic::{
     C64_PALETTE, VicCycleSequencer, VicCycleSignals, VicFetchError, VicPixelCollisions,
     VicPixelDataSource, VicPixelModes, VicPixelPipeline, VicPixelRegisters, VicSprite,
 };
 use serde::{Deserialize, Serialize};
+
+#[path = "support/json_line.rs"]
+mod json_line;
 
 const FNV_OFFSET_BASIS: u32 = 0x811c_9dc5;
 const FNV_PRIME: u32 = 0x0100_0193;
@@ -127,9 +130,7 @@ fn palette_color(index: u8) -> u32 {
 }
 
 fn main() -> Result<(), Box<dyn Error>> {
-    let mut input = String::new();
-    io::stdin().read_to_string(&mut input)?;
-    let operations: Vec<Operation> = serde_json::from_str(&input)?;
+    let operations: Vec<Operation> = json_line::read_stdin_json_line()?;
     let mut sequencer = VicCycleSequencer::new();
     let mut pipeline = VicPixelPipeline::default();
     let mut source = PatternPixelSource::default();

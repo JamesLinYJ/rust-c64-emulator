@@ -56,6 +56,41 @@ impl VicBorderController {
     }
 
     pub fn tick(&mut self, signals: VicBorderSignals) -> u8 {
+        let border = &self.timing.border;
+        let left_cycle = if signals.column_select {
+            border.standard_column_left_cycle
+        } else {
+            border.reduced_column_left_cycle
+        };
+        let right_cycle = if signals.column_select {
+            border.standard_column_right_cycle
+        } else {
+            border.reduced_column_right_cycle
+        };
+        let start_line = if signals.row_select {
+            border.standard_row_start_line
+        } else {
+            border.reduced_row_start_line
+        };
+        let stop_line = if signals.row_select {
+            border.standard_row_stop_line
+        } else {
+            border.reduced_row_stop_line
+        };
+        let stable_state = self.flag(RENDERED_BORDER) == self.flag(MAIN_BORDER);
+        let transition_cycle = signals.raster_cycle == 1
+            || signals.raster_cycle == left_cycle
+            || signals.raster_cycle == right_cycle
+            || (signals.raster_line == start_line && signals.display_enabled)
+            || signals.raster_line == stop_line;
+        if stable_state && !transition_cycle {
+            return if self.flag(MAIN_BORDER) {
+                BORDER_ALL_PIXELS
+            } else {
+                BORDER_NO_PIXELS
+            };
+        }
+
         self.check_horizontal_border(signals);
         let pixel_mask = self.draw_pixel_mask(signals.column_select);
 
@@ -179,7 +214,34 @@ impl VicBorderController {
 
 #[cfg(test)]
 mod tests {
-    use super::{VicBorderController, VicBorderSignals};
+    use super::{
+        BORDER_ALL_PIXELS, BORDER_NO_PIXELS, MAIN_BORDER, RENDERED_BORDER, VicBorderController,
+        VicBorderSignals,
+    };
+
+    #[test]
+    fn stable_border_states_are_exact_noops_between_transition_cycles() {
+        let signals = VicBorderSignals {
+            column_select: true,
+            display_enabled: false,
+            raster_cycle: 30,
+            raster_line: 20,
+            row_select: true,
+        };
+
+        for (state, expected_mask) in [
+            (MAIN_BORDER | RENDERED_BORDER, BORDER_ALL_PIXELS),
+            (0, BORDER_NO_PIXELS),
+        ] {
+            let mut border = VicBorderController {
+                state,
+                ..VicBorderController::default()
+            };
+            let initial = border;
+            assert_eq!(border.tick(signals), expected_mask);
+            assert_eq!(border, initial);
+        }
+    }
 
     #[test]
     fn standard_border_opens_and_closes_at_pal_cycles() {

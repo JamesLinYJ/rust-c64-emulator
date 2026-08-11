@@ -8,7 +8,7 @@
 //   作者:       OpenAI Codex
 // --------------------------------------------------------------------------
 
-import { spawnSync } from 'node:child_process';
+import { runRustJsonTraceSync } from './runRustJsonTrace';
 
 import { SID_MODEL, type SidModel } from '../src/devices/SidModel';
 import { SidOscillator } from '../src/devices/SidOscillator';
@@ -148,23 +148,12 @@ function runTypeScript(scenario: Scenario): readonly Observation[] {
 }
 
 function runRust(scenarios: readonly Scenario[]): readonly (readonly Observation[])[] {
-  const result = spawnSync(
-    'cargo',
-    ['run', '--quiet', '--locked', '-p', 'c64-core', '--example', 'sid_oscillator_trace'],
-    {
-      cwd: process.cwd(),
-      encoding: 'utf8',
-      input: JSON.stringify(scenarios),
-      maxBuffer: 96 * 1024 * 1024,
-    },
-  );
-  if (result.error) throw result.error;
-  if (result.status !== 0) {
-    throw new Error(
-      `Rust SID oscillator adapter failed (${String(result.status)}):\n${result.stderr}`,
-    );
-  }
-  return JSON.parse(result.stdout) as readonly (readonly Observation[])[];
+  return runRustJsonTraceSync<readonly (readonly Observation[])[]>({
+    example: 'sid_oscillator_trace',
+    input: scenarios,
+    label: 'Rust SID oscillator adapter',
+    maximumOutputBytes: 96 * 1024 * 1024,
+  });
 }
 
 const scenarios: readonly Scenario[] = [

@@ -267,6 +267,10 @@ impl C64Chipset {
         &mut self.datasette
     }
 
+    pub(crate) fn datasette_clock_required(&self) -> bool {
+        self.pending_datasette_error.is_some() || self.datasette.mounted_tape().is_some()
+    }
+
     pub const fn cartridge(&self) -> Option<&Cartridge> {
         self.cartridge.as_ref()
     }
@@ -320,7 +324,13 @@ impl C64Chipset {
             VideoStandard::Pal => PAL_VIC_TIMING,
             VideoStandard::Ntsc => NTSC_VIC_TIMING,
         };
+        let cia_timing = match video_standard {
+            VideoStandard::Pal => Mos6526Timing::PAL,
+            VideoStandard::Ntsc => Mos6526Timing::NTSC,
+        };
         self.video_standard == video_standard
+            && self.irq_cia.state_matches_timing(cia_timing)
+            && self.nmi_cia.state_matches_timing(cia_timing)
             && self.vic.state_matches_timing(vic_timing)
             && self.sid.model() == sid_model
             && self.sid.processor_clock_hz() == video_standard.system_clock_hz()
@@ -446,9 +456,13 @@ impl C64Chipset {
         drive_result
     }
 
+    #[cfg_attr(target_arch = "wasm32", inline(never))]
     pub(crate) fn clock_datasette(&mut self) -> Result<(), C64ChipsetError> {
         if let Some(error) = self.pending_datasette_error.take() {
             return Err(error.into());
+        }
+        if self.datasette.mounted_tape().is_none() {
+            return Ok(());
         }
         let result = self.datasette.clock_cycle()?;
         for _ in 0..result.read_pulses {
@@ -457,36 +471,44 @@ impl C64Chipset {
         Ok(())
     }
 
+    #[cfg_attr(target_arch = "wasm32", inline(never))]
     pub(crate) fn clock_cias(&mut self) {
         self.irq_cia.clock_cycle();
         self.nmi_cia.clock_cycle();
         self.synchronize_light_pen_input();
     }
 
+    #[cfg_attr(target_arch = "wasm32", inline(never))]
     pub(crate) fn clock_cartridge(&mut self) {
         if let Some(cartridge) = self.cartridge.as_mut() {
             cartridge.clock_cycles(1);
         }
     }
 
+    #[cfg_attr(target_arch = "wasm32", inline(never))]
     pub(crate) fn clock_vic<M: VicMemoryBus>(&mut self, memory: &mut M) -> Result<(), VicError> {
         self.vic.clock_cycle(memory).map(|_| ())
     }
 
+    #[cfg_attr(target_arch = "wasm32", inline(never))]
     pub(crate) fn clock_sid(&mut self) {
         self.sid.clock_cycle();
+    }
+
+    pub(crate) fn clock_sid_cycles(&mut self, cycles: u32) {
+        self.sid.clock_cycles(cycles);
     }
 
     pub fn clock_host_input(&mut self) {
         self.host_input.clock_cycle();
     }
 
+    #[cfg_attr(target_arch = "wasm32", inline(never))]
     pub(crate) fn clock_drive1541(&mut self) -> Result<(), C64ChipsetError> {
-        let result = if let Some(drive) = self.drive1541.as_mut() {
-            drive.clock_host_cycle(&mut self.iec_bus).map(|_| ())
-        } else {
-            Ok(())
+        let Some(drive) = self.drive1541.as_mut() else {
+            return Ok(());
         };
+        let result = drive.clock_host_cycle(&mut self.iec_bus).map(|_| ());
         self.synchronize_cia1_flag_input();
         result.map_err(Into::into)
     }
@@ -549,6 +571,15 @@ impl C64Chipset {
     }
 
     fn synchronize_light_pen_input(&mut self) {
+        if self.host_input.keyboard_matrix_is_open()
+            && self.irq_cia.port_b_data_direction() & CIA1_PORT_B_LIGHT_PEN_INPUT == 0
+        {
+            self.vic.set_light_pen_input_high(
+                self.host_input.joystick_port_1_grounded() & CIA1_PORT_B_LIGHT_PEN_INPUT == 0,
+            );
+            return;
+        }
+
         let inputs = self.cia1_port_inputs();
         self.vic
             .set_light_pen_input_high(inputs.port_b & CIA1_PORT_B_LIGHT_PEN_INPUT != 0);
@@ -814,6 +845,18 @@ mod tests {
         let mut devices = C64Chipset::new(VideoStandard::Pal);
         let mut memory = ZeroVicMemory;
         devices.write_io(0xdc03, CIA1_PORT_B_LIGHT_PEN_INPUT);
+        devices.clock_system_cycle(&mut memory).unwrap();
+
+        assert_ne!(devices.read_io(0xd019, 0xff) & 0x08, 0);
+    }
+
+    #[test]
+    fn idle_keyboard_keeps_joystick_fire_connected_to_the_light_pen() {
+        let mut devices = C64Chipset::new(VideoStandard::Pal);
+        let mut memory = ZeroVicMemory;
+        devices
+            .set_host_input(&[0; 8], false, CIA1_PORT_B_LIGHT_PEN_INPUT, 0, false)
+            .unwrap();
         devices.clock_system_cycle(&mut memory).unwrap();
 
         assert_ne!(devices.read_io(0xd019, 0xff) & 0x08, 0);

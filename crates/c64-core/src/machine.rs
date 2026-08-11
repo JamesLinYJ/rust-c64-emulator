@@ -72,6 +72,31 @@ impl CoreDiagnostics {
         self.cpu_bus_transactions = self.cpu_bus_transactions.wrapping_add(1);
         self.last_cpu_bus_transaction = Some(transaction);
     }
+
+    fn merge_runtime(&mut self, delta: Self) {
+        self.retired_cpu_slots = self.retired_cpu_slots.wrapping_add(delta.retired_cpu_slots);
+        self.elapsed_system_cycles = self
+            .elapsed_system_cycles
+            .wrapping_add(delta.elapsed_system_cycles);
+        self.held_cpu_read_system_cycles = self
+            .held_cpu_read_system_cycles
+            .wrapping_add(delta.held_cpu_read_system_cycles);
+        self.reu_dma_system_cycles = self
+            .reu_dma_system_cycles
+            .wrapping_add(delta.reu_dma_system_cycles);
+        self.reu_dma_vic_stall_cycles = self
+            .reu_dma_vic_stall_cycles
+            .wrapping_add(delta.reu_dma_vic_stall_cycles);
+        self.reu_dma_bus_cycles = self
+            .reu_dma_bus_cycles
+            .wrapping_add(delta.reu_dma_bus_cycles);
+        self.cpu_bus_transactions = self
+            .cpu_bus_transactions
+            .wrapping_add(delta.cpu_bus_transactions);
+        if delta.last_cpu_bus_transaction.is_some() {
+            self.last_cpu_bus_transaction = delta.last_cpu_bus_transaction;
+        }
+    }
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, wincode::SchemaRead, wincode::SchemaWrite)]
@@ -705,19 +730,25 @@ impl C64Core {
             .processor_port_output_changed(self.address_space.processor_port().output_state());
         self.cpu
             .restore_state(Cpu6510State::deterministic_power_on());
-        {
-            let mut bus = ClockedCpuBus::new(
+        let mut diagnostics_delta = CoreDiagnostics::default();
+        let mut pending_sid_cycles = 0;
+        let hardware_error = {
+            let mut bus = ClockedCpuBus::<true>::new(
                 &mut self.address_space,
                 &mut self.devices,
                 &mut self.clock,
                 &mut self.irq_line,
                 &mut self.nmi_line,
-                &mut self.diagnostics,
+                &mut diagnostics_delta,
+                &mut pending_sid_cycles,
             );
             self.cpu.reset(&mut bus);
-            if let Some(error) = bus.take_hardware_error() {
-                return Err(error.into());
-            }
+            bus.take_hardware_error()
+        };
+        self.devices.clock_sid_cycles(pending_sid_cycles);
+        self.diagnostics.merge_runtime(diagnostics_delta);
+        if let Some(error) = hardware_error {
+            return Err(error.into());
         }
         self.diagnostics.execution_mode_changes =
             self.diagnostics.execution_mode_changes.wrapping_add(1);
@@ -754,10 +785,18 @@ impl C64Core {
     pub fn run_system_cycles(&mut self, cycles: u64) -> Result<(), CoreError> {
         self.clock.advance_system_cycles(0)?;
         let slots_per_cycle = self.execution.status().effective_slots.get();
-        for _ in 0..cycles {
-            self.run_cpu_slots(u64::from(slots_per_cycle))?;
-        }
-        Ok(())
+        let mut diagnostics_delta = CoreDiagnostics::default();
+        let result = (|| {
+            for _ in 0..cycles {
+                self.run_cpu_slots_accumulating(
+                    u64::from(slots_per_cycle),
+                    &mut diagnostics_delta,
+                )?;
+            }
+            Ok(())
+        })();
+        self.diagnostics.merge_runtime(diagnostics_delta);
+        result
     }
 
     /// 推进指定数量的内部 CPU 槽位。
@@ -766,32 +805,77 @@ impl C64Core {
     ///
     /// 生成的 CPU 架构表与严格执行器不一致时返回内部 CPU 错误。
     pub fn run_cpu_slots(&mut self, slots: u64) -> Result<u64, CoreError> {
+        let mut diagnostics_delta = CoreDiagnostics::default();
+        let result = self.run_cpu_slots_accumulating(slots, &mut diagnostics_delta);
+        self.diagnostics.merge_runtime(diagnostics_delta);
+        result
+    }
+
+    fn run_cpu_slots_accumulating(
+        &mut self,
+        slots: u64,
+        diagnostics: &mut CoreDiagnostics,
+    ) -> Result<u64, CoreError> {
         let mut elapsed_cycles = 0;
-        for _ in 0..slots {
-            elapsed_cycles += self.service_reu_dma()?;
-            self.service_pending_interrupt();
-            self.service_nmi_vector_takeover();
-            let (completed_system_cycle, hardware_error) = {
-                let mut bus = ClockedCpuBus::new(
-                    &mut self.address_space,
-                    &mut self.devices,
-                    &mut self.clock,
-                    &mut self.irq_line,
-                    &mut self.nmi_line,
-                    &mut self.diagnostics,
-                );
-                let cpu_result = self.cpu.clock_cycle(&mut bus);
-                let completed = bus.completed_system_cycle();
-                let hardware_error = bus.take_hardware_error();
-                cpu_result?;
-                (completed, hardware_error)
-            };
-            if let Some(error) = hardware_error {
-                return Err(error.into());
+        let mut pending_sid_cycles = 0;
+        let result = (|| {
+            for _ in 0..slots {
+                elapsed_cycles += self.run_cpu_slot(diagnostics, &mut pending_sid_cycles)?;
             }
-            if completed_system_cycle {
-                elapsed_cycles += 1;
-            }
+            Ok(elapsed_cycles)
+        })();
+        self.devices.clock_sid_cycles(pending_sid_cycles);
+        result
+    }
+
+    #[inline]
+    fn run_cpu_slot(
+        &mut self,
+        diagnostics: &mut CoreDiagnostics,
+        pending_sid_cycles: &mut u32,
+    ) -> Result<u64, CoreError> {
+        self.run_cpu_slot_inner::<false>(diagnostics, pending_sid_cycles)
+    }
+
+    #[inline]
+    fn run_strict_cpu_slot(
+        &mut self,
+        diagnostics: &mut CoreDiagnostics,
+        pending_sid_cycles: &mut u32,
+    ) -> Result<u64, CoreError> {
+        self.run_cpu_slot_inner::<true>(diagnostics, pending_sid_cycles)
+    }
+
+    #[inline]
+    fn run_cpu_slot_inner<const STRICT: bool>(
+        &mut self,
+        diagnostics: &mut CoreDiagnostics,
+        pending_sid_cycles: &mut u32,
+    ) -> Result<u64, CoreError> {
+        let mut elapsed_cycles = self.service_reu_dma::<STRICT>(diagnostics, pending_sid_cycles)?;
+        self.service_pending_interrupt();
+        self.service_nmi_vector_takeover();
+        let (completed_system_cycle, hardware_error) = {
+            let mut bus = ClockedCpuBus::<STRICT>::new(
+                &mut self.address_space,
+                &mut self.devices,
+                &mut self.clock,
+                &mut self.irq_line,
+                &mut self.nmi_line,
+                diagnostics,
+                pending_sid_cycles,
+            );
+            let cpu_result = self.cpu.clock_cycle(&mut bus);
+            let completed = bus.completed_system_cycle();
+            let hardware_error = bus.take_hardware_error();
+            cpu_result?;
+            (completed, hardware_error)
+        };
+        if let Some(error) = hardware_error {
+            return Err(error.into());
+        }
+        if completed_system_cycle {
+            elapsed_cycles += 1;
         }
         Ok(elapsed_cycles)
     }
@@ -805,32 +889,60 @@ impl C64Core {
         &mut self,
         maximum_system_cycles: u64,
     ) -> Result<u64, CoreError> {
-        let initial_generation = self.devices.vic().frame_generation();
-        let mut elapsed_system_cycles = 0_u64;
-        while self.devices.vic().frame_generation() == initial_generation
-            || self.clock.timestamp().slot != 0
-        {
-            if elapsed_system_cycles >= maximum_system_cycles {
-                return Err(CoreError::VideoFrameTimeout {
-                    maximum_system_cycles,
-                });
-            }
-            elapsed_system_cycles = elapsed_system_cycles.saturating_add(self.run_cpu_slots(1)?);
-        }
-        Ok(elapsed_system_cycles)
+        let mut diagnostics_delta = CoreDiagnostics::default();
+        let result = self
+            .run_until_next_video_frame_accumulating(maximum_system_cycles, &mut diagnostics_delta);
+        self.diagnostics.merge_runtime(diagnostics_delta);
+        result
     }
 
-    fn service_reu_dma(&mut self) -> Result<u64, CoreError> {
+    fn run_until_next_video_frame_accumulating(
+        &mut self,
+        maximum_system_cycles: u64,
+        diagnostics: &mut CoreDiagnostics,
+    ) -> Result<u64, CoreError> {
+        let initial_generation = self.devices.vic().frame_generation();
+        let mut elapsed_system_cycles = 0_u64;
+        let mut pending_sid_cycles = 0;
+        let strict = self.execution.status().effective_slots == SlotsPerSystemCycle::STRICT;
+        let result = (|| {
+            while self.devices.vic().frame_generation() == initial_generation
+                || self.clock.timestamp().slot != 0
+            {
+                if elapsed_system_cycles >= maximum_system_cycles {
+                    return Err(CoreError::VideoFrameTimeout {
+                        maximum_system_cycles,
+                    });
+                }
+                let elapsed = if strict {
+                    self.run_strict_cpu_slot(diagnostics, &mut pending_sid_cycles)?
+                } else {
+                    self.run_cpu_slot(diagnostics, &mut pending_sid_cycles)?
+                };
+                elapsed_system_cycles = elapsed_system_cycles.saturating_add(elapsed);
+            }
+            Ok(elapsed_system_cycles)
+        })();
+        self.devices.clock_sid_cycles(pending_sid_cycles);
+        result
+    }
+
+    fn service_reu_dma<const STRICT: bool>(
+        &mut self,
+        diagnostics: &mut CoreDiagnostics,
+        pending_sid_cycles: &mut u32,
+    ) -> Result<u64, CoreError> {
         let mut elapsed_cycles = 0;
         while self.devices.reu().is_some_and(RamExpansionUnit::dma_active) {
             let hardware_error = {
-                let mut bus = ClockedCpuBus::new(
+                let mut bus = ClockedCpuBus::<STRICT>::new(
                     &mut self.address_space,
                     &mut self.devices,
                     &mut self.clock,
                     &mut self.irq_line,
                     &mut self.nmi_line,
-                    &mut self.diagnostics,
+                    diagnostics,
+                    pending_sid_cycles,
                 );
                 bus.clock_hardware_cycle(None);
                 bus.take_hardware_error()
@@ -840,30 +952,32 @@ impl C64Core {
             }
 
             if self.devices.aec_low() {
-                self.diagnostics.reu_dma_vic_stall_cycles =
-                    self.diagnostics.reu_dma_vic_stall_cycles.wrapping_add(1);
+                diagnostics.reu_dma_vic_stall_cycles =
+                    diagnostics.reu_dma_vic_stall_cycles.wrapping_add(1);
             } else {
                 let operation = self
                     .devices
                     .reu()
                     .and_then(RamExpansionUnit::dma_operation)
                     .expect("an active REU must publish one DMA operation");
+                self.devices
+                    .clock_sid_cycles(core::mem::take(pending_sid_cycles));
                 let c64_value = match operation {
                     ReuDmaOperation::ReadC64 { address } => {
                         let value = self
                             .address_space
                             .reu_dma_bus(&mut self.devices)
                             .read(address);
-                        self.diagnostics.reu_dma_bus_cycles =
-                            self.diagnostics.reu_dma_bus_cycles.wrapping_add(1);
+                        diagnostics.reu_dma_bus_cycles =
+                            diagnostics.reu_dma_bus_cycles.wrapping_add(1);
                         Some(value)
                     }
                     ReuDmaOperation::WriteC64 { address, value } => {
                         self.address_space
                             .reu_dma_bus(&mut self.devices)
                             .write(address, value);
-                        self.diagnostics.reu_dma_bus_cycles =
-                            self.diagnostics.reu_dma_bus_cycles.wrapping_add(1);
+                        diagnostics.reu_dma_bus_cycles =
+                            diagnostics.reu_dma_bus_cycles.wrapping_add(1);
                         None
                     }
                     ReuDmaOperation::Idle => None,
@@ -875,10 +989,8 @@ impl C64Core {
             }
 
             self.clock.advance_external_wait_cycle();
-            self.diagnostics.elapsed_system_cycles =
-                self.diagnostics.elapsed_system_cycles.wrapping_add(1);
-            self.diagnostics.reu_dma_system_cycles =
-                self.diagnostics.reu_dma_system_cycles.wrapping_add(1);
+            diagnostics.elapsed_system_cycles = diagnostics.elapsed_system_cycles.wrapping_add(1);
+            diagnostics.reu_dma_system_cycles = diagnostics.reu_dma_system_cycles.wrapping_add(1);
             elapsed_cycles += 1;
             let sampled_cycle = self.clock.timestamp().system_cycle;
             self.irq_line
@@ -1024,18 +1136,20 @@ impl C64Core {
     }
 }
 
-struct ClockedCpuBus<'a> {
+struct ClockedCpuBus<'a, const STRICT: bool> {
     address_space: &'a mut C64AddressSpace,
     devices: &'a mut C64Chipset,
     clock: &'a mut VirtualClock,
     irq_line: &'a mut CpuIrqLine,
     nmi_line: &'a mut CpuNmiLine,
     diagnostics: &'a mut CoreDiagnostics,
+    pending_sid_cycles: &'a mut u32,
+    passive_cpu_read: Option<(u16, u8)>,
     completed_system_cycle: bool,
     hardware_error: Option<C64ChipsetError>,
 }
 
-impl<'a> ClockedCpuBus<'a> {
+impl<'a, const STRICT: bool> ClockedCpuBus<'a, STRICT> {
     fn new(
         address_space: &'a mut C64AddressSpace,
         devices: &'a mut C64Chipset,
@@ -1043,6 +1157,7 @@ impl<'a> ClockedCpuBus<'a> {
         irq_line: &'a mut CpuIrqLine,
         nmi_line: &'a mut CpuNmiLine,
         diagnostics: &'a mut CoreDiagnostics,
+        pending_sid_cycles: &'a mut u32,
     ) -> Self {
         Self {
             address_space,
@@ -1051,6 +1166,8 @@ impl<'a> ClockedCpuBus<'a> {
             irq_line,
             nmi_line,
             diagnostics,
+            pending_sid_cycles,
+            passive_cpu_read: None,
             completed_system_cycle: false,
             hardware_error: None,
         }
@@ -1064,29 +1181,37 @@ impl<'a> ClockedCpuBus<'a> {
         self.hardware_error.take()
     }
 
-    fn begin_cpu_slot(&mut self, cpu_read_address: Option<u16>) {
-        if self.clock.timestamp().slot != 0 {
-            return;
+    fn begin_cpu_slot(&mut self, cpu_read_address: Option<u16>) -> bool {
+        self.passive_cpu_read = None;
+        if !STRICT && self.clock.timestamp().slot != 0 {
+            return false;
         }
+        debug_assert!(!STRICT || self.clock.timestamp().slot == 0);
         self.clock_hardware_cycle(cpu_read_address);
+        true
     }
 
     fn clock_hardware_cycle(&mut self, cpu_read_address: Option<u16>) {
         self.address_space.tick_processor_port(1);
-        let result = self.devices.clock_datasette();
-        if let Err(error) = result
-            && self.hardware_error.is_none()
-        {
-            self.hardware_error = Some(error);
+        if self.devices.datasette_clock_required() {
+            let result = self.devices.clock_datasette();
+            if let Err(error) = result
+                && self.hardware_error.is_none()
+            {
+                self.hardware_error = Some(error);
+            }
         }
         self.address_space
             .synchronize_processor_port_inputs(self.devices.processor_port_input_state());
-        self.devices.clock_cartridge();
-        self.devices.clock_cias();
-        if let Some(address) = cpu_read_address {
-            self.address_space
-                .drive_passive_cpu_read_data_bus(address, self.devices.cartridge_lines());
+        if self.devices.cartridge().is_some() {
+            self.devices.clock_cartridge();
         }
+        self.devices.clock_cias();
+        self.passive_cpu_read = cpu_read_address.and_then(|address| {
+            self.address_space
+                .drive_passive_cpu_read_data_bus(address, self.devices.cartridge_lines())
+                .map(|value| (address, value))
+        });
         let vic_bank_address = self.devices.vic_bank_address();
         let result = {
             let mut vic_memory = self.address_space.vic_memory_bus(vic_bank_address);
@@ -1097,12 +1222,14 @@ impl<'a> ClockedCpuBus<'a> {
         {
             self.hardware_error = Some(error.into());
         }
-        self.devices.clock_sid();
-        let result = self.devices.clock_drive1541();
-        if let Err(error) = result
-            && self.hardware_error.is_none()
-        {
-            self.hardware_error = Some(error);
+        self.defer_sid_cycle();
+        if self.devices.drive1541().is_some() {
+            let result = self.devices.clock_drive1541();
+            if let Err(error) = result
+                && self.hardware_error.is_none()
+            {
+                self.hardware_error = Some(error);
+            }
         }
         let sampled_cycle = self.clock.timestamp().system_cycle.saturating_add(1);
         self.irq_line
@@ -1110,6 +1237,18 @@ impl<'a> ClockedCpuBus<'a> {
         self.nmi_line
             .update(self.devices.nmi_asserted(), sampled_cycle);
         self.devices.clock_host_input();
+    }
+
+    fn defer_sid_cycle(&mut self) {
+        if *self.pending_sid_cycles == u32::MAX {
+            self.flush_sid_cycles();
+        }
+        *self.pending_sid_cycles += 1;
+    }
+
+    fn flush_sid_cycles(&mut self) {
+        self.devices
+            .clock_sid_cycles(core::mem::take(self.pending_sid_cycles));
     }
 
     fn finish_held_system_cycle(&mut self, cpu_read_address: u16) {
@@ -1120,7 +1259,12 @@ impl<'a> ClockedCpuBus<'a> {
     }
 
     fn finish_cpu_slot(&mut self) {
-        self.completed_system_cycle = self.clock.consume_cpu_slot();
+        if STRICT {
+            self.clock.consume_strict_cpu_slot();
+            self.completed_system_cycle = true;
+        } else {
+            self.completed_system_cycle = self.clock.consume_cpu_slot();
+        }
         self.diagnostics.retired_cpu_slots = self.diagnostics.retired_cpu_slots.wrapping_add(1);
         if self.completed_system_cycle {
             self.diagnostics.elapsed_system_cycles =
@@ -1129,18 +1273,30 @@ impl<'a> ClockedCpuBus<'a> {
     }
 }
 
-impl CpuBus for ClockedCpuBus<'_> {
+impl<const STRICT: bool> CpuBus for ClockedCpuBus<'_, STRICT> {
     fn read(&mut self, address: u16) -> u8 {
         self.devices.begin_cpu_read();
-        self.begin_cpu_slot(Some(address));
+        let mut board_inputs_current = self.begin_cpu_slot(Some(address));
         while self.devices.ba_low() && self.hardware_error.is_none() {
             self.devices.mark_cpu_read_held();
             self.diagnostics.held_cpu_read_system_cycles =
                 self.diagnostics.held_cpu_read_system_cycles.wrapping_add(1);
             self.finish_held_system_cycle(address);
+            board_inputs_current = true;
         }
-        let value = {
-            let mut bus = self.address_space.cpu_bus(self.devices);
+        if address_may_select_sid(address) {
+            self.flush_sid_cycles();
+        }
+        let value = if let Some((passive_address, value)) = self.passive_cpu_read.take()
+            && passive_address == address
+        {
+            value
+        } else {
+            let mut bus = if board_inputs_current {
+                self.address_space.cpu_bus_after_passive_read(self.devices)
+            } else {
+                self.address_space.cpu_bus(self.devices)
+            };
             bus.read(address)
         };
         self.diagnostics
@@ -1157,6 +1313,9 @@ impl CpuBus for ClockedCpuBus<'_> {
 
     fn write(&mut self, address: u16, value: u8) {
         self.begin_cpu_slot(None);
+        if address_may_select_sid(address) {
+            self.flush_sid_cycles();
+        }
         {
             let mut bus = self.address_space.cpu_bus(self.devices);
             bus.write(address, value);
@@ -1175,6 +1334,10 @@ impl CpuBus for ClockedCpuBus<'_> {
     fn read_was_held(&self) -> bool {
         self.devices.cpu_read_was_held()
     }
+}
+
+const fn address_may_select_sid(address: u16) -> bool {
+    matches!(address >> 8, 0xd4..=0xd7)
 }
 
 #[derive(Debug)]
@@ -1333,6 +1496,25 @@ mod tests {
         assert_eq!(restored.cpu_state(), source.cpu_state());
         assert_eq!(restored.read_base_ram(0xc000), 0x5a);
         assert_eq!(restored.diagnostics().state_loads, 1);
+    }
+
+    #[test]
+    fn coarse_frame_run_matches_single_slot_execution_exactly() {
+        let mut coarse = C64Core::default();
+        let mut stepped = coarse.clone();
+
+        let coarse_elapsed = coarse.run_until_next_video_frame(20_000).unwrap();
+        let initial_generation = stepped.devices().vic().frame_generation();
+        let mut stepped_elapsed = 0_u64;
+        while stepped.devices().vic().frame_generation() == initial_generation
+            || stepped.timestamp().slot != 0
+        {
+            stepped_elapsed += stepped.run_cpu_slots(1).unwrap();
+            assert!(stepped_elapsed <= 20_000);
+        }
+
+        assert_eq!(coarse_elapsed, stepped_elapsed);
+        assert_eq!(coarse, stepped);
     }
 
     #[test]

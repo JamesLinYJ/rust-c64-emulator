@@ -25,6 +25,19 @@ const STATE_COUNT: u16 = 0x0800;
 const STATE_ONE_SHOT: u16 = 0x1000;
 const CONTROL_STATE_MASK: u16 =
     STATE_START | STATE_ONE_SHOT_CONTROL | STATE_FORCE_LOAD_CONTROL | STATE_PROCESSOR_CLOCK_INPUT;
+const STEADY_PROCESSOR_CLOCK_STATE: u16 = STATE_START
+    | STATE_PROCESSOR_CLOCK_INPUT
+    | STATE_COUNT_STAGE_2
+    | STATE_COUNT_STAGE_3
+    | STATE_COUNT;
+const STOPPED_ONE_SHOT_FIXED_POINT: u16 =
+    STATE_ONE_SHOT_CONTROL | STATE_ONE_SHOT_STAGE_0 | STATE_ONE_SHOT;
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(super) enum QuietTimerAction {
+    None,
+    Decrement,
+}
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq, wincode::SchemaRead, wincode::SchemaWrite)]
 pub(super) enum TimerInputMode {
@@ -132,8 +145,50 @@ impl Mos6526Timer {
         }
     }
 
+    #[inline]
     pub(super) fn tick_cycle(&mut self, external_step: bool) -> bool {
         self.underflow_pulse_active = false;
+        if !external_step && let Some(action) = self.quiet_processor_clock_action() {
+            self.apply_quiet_processor_clock_action(action);
+            return false;
+        }
+        self.tick_pipeline(external_step)
+    }
+
+    pub(super) const fn quiet_processor_clock_action(&self) -> Option<QuietTimerAction> {
+        if self.state == STEADY_PROCESSOR_CLOCK_STATE && self.counter > 1 {
+            return Some(QuietTimerAction::Decrement);
+        }
+        let processor_clock = self.state & STATE_PROCESSOR_CLOCK_INPUT != 0;
+        let state_without_input = self.state & !STATE_PROCESSOR_CLOCK_INPUT;
+        let fixed_control_state = state_without_input & !STATE_START;
+        let stable_controls =
+            fixed_control_state == 0 || fixed_control_state == STOPPED_ONE_SHOT_FIXED_POINT;
+        if stable_controls && (!processor_clock || self.state & STATE_START == 0) {
+            Some(QuietTimerAction::None)
+        } else {
+            None
+        }
+    }
+
+    pub(super) fn apply_quiet_processor_clock_action(&mut self, action: QuietTimerAction) -> bool {
+        self.underflow_pulse_active = false;
+        if matches!(action, QuietTimerAction::Decrement) {
+            self.counter -= 1;
+            return self.counter > 1;
+        }
+        true
+    }
+
+    pub(super) fn apply_cached_processor_clock_decrement(&mut self) -> bool {
+        debug_assert_eq!(self.state, STEADY_PROCESSOR_CLOCK_STATE);
+        debug_assert!(self.counter > 1);
+        self.counter -= 1;
+        self.counter > 1
+    }
+
+    #[cfg_attr(target_arch = "wasm32", inline(never))]
+    fn tick_pipeline(&mut self, external_step: bool) -> bool {
         if external_step && self.running() {
             self.state |= STATE_EXTERNAL_STEP;
         }
@@ -200,8 +255,58 @@ impl Mos6526Timer {
 
 #[cfg(test)]
 mod tests {
-    use super::{Mos6526Timer, TimerInputMode};
+    use super::{Mos6526Timer, QuietTimerAction, TimerInputMode};
     use crate::devices::cia::{CONTROL_FORCE_LOAD, CONTROL_ONE_SHOT, CONTROL_START};
+
+    #[test]
+    fn stopped_processor_clock_cycle_is_an_exact_noop() {
+        let mut timer = Mos6526Timer::new();
+        let initial = timer;
+
+        for _ in 0..1_000 {
+            assert!(!timer.tick_cycle(false));
+        }
+
+        assert_eq!(timer, initial);
+    }
+
+    #[test]
+    fn stopped_one_shot_fixed_point_is_an_exact_noop() {
+        let mut timer = Mos6526Timer::new();
+        timer.write_control(CONTROL_ONE_SHOT, TimerInputMode::ProcessorClock);
+        timer.tick_cycle(false);
+        timer.tick_cycle(false);
+        assert!(matches!(
+            timer.quiet_processor_clock_action(),
+            Some(QuietTimerAction::None)
+        ));
+        let initial = timer;
+
+        for _ in 0..1_000 {
+            assert!(!timer.tick_cycle(false));
+        }
+
+        assert_eq!(timer, initial);
+    }
+
+    #[test]
+    fn quiet_actions_match_the_full_timer_pipeline() {
+        let mut optimized = Mos6526Timer::new();
+        optimized.write_latch_low(0x23);
+        optimized.write_latch_high(0x01);
+        optimized.write_control(
+            CONTROL_START | CONTROL_FORCE_LOAD,
+            TimerInputMode::ProcessorClock,
+        );
+        let mut reference = optimized;
+
+        for _ in 0..1_000 {
+            optimized.tick_cycle(false);
+            reference.underflow_pulse_active = false;
+            reference.tick_pipeline(false);
+            assert_eq!(optimized, reference);
+        }
+    }
 
     #[test]
     fn force_load_and_count_are_separate_pipeline_events() {
@@ -237,5 +342,26 @@ mod tests {
         }
         assert!(!timer.running());
         assert_eq!(timer.counter(), 1);
+    }
+
+    #[test]
+    fn steady_processor_clock_keeps_exact_underflow_boundary() {
+        let mut timer = Mos6526Timer::new();
+        timer.write_latch_low(0x23);
+        timer.write_latch_high(0x01);
+        timer.write_control(
+            CONTROL_START | CONTROL_FORCE_LOAD,
+            TimerInputMode::ProcessorClock,
+        );
+        assert!(!timer.tick_cycle(false));
+        assert!(!timer.tick_cycle(false));
+        for expected in (2..=0x0123).rev() {
+            assert!(!timer.tick_cycle(false));
+            assert_eq!(timer.counter(), expected);
+        }
+        assert!(!timer.tick_cycle(false));
+        assert_eq!(timer.counter(), 1);
+        assert!(timer.tick_cycle(false));
+        assert_eq!(timer.counter(), 0x0123);
     }
 }

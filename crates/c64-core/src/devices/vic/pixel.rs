@@ -47,6 +47,7 @@ const DEFAULT_SPRITE_COLORS: [u32; VIC_SPRITE_COUNT] = [
     C64_PALETTE[12],
 ];
 const PIXELS_PER_VIC_CYCLE: u16 = 8;
+const PIXELS_PER_VIC_CYCLE_USIZE: usize = 8;
 const TEXT_COLUMN_WIDTH: i32 = 8;
 const TEXT_DISPLAY_WIDTH: i32 = 40 * TEXT_COLUMN_WIDTH;
 const SPRITE_SOURCE_WIDTH: u16 = 24;
@@ -231,6 +232,30 @@ struct GraphicsPixel {
     foreground: bool,
 }
 
+#[derive(Default)]
+struct GraphicsCellCache {
+    color_ram: u8,
+    column: Option<u8>,
+    graphics: u8,
+    screen_code: u8,
+}
+
+impl GraphicsCellCache {
+    fn load<S: VicPixelDataSource>(&mut self, column: u8, fetch: &S) -> Result<(), VicFetchError> {
+        if self.column == Some(column) {
+            return Ok(());
+        }
+        let screen_code = fetch.screen_matrix_byte(column)?;
+        let color_ram = fetch.color_matrix_nibble(column)?;
+        let graphics = fetch.graphics_byte(column)?;
+        self.screen_code = screen_code;
+        self.color_ram = color_ram;
+        self.graphics = graphics;
+        self.column = Some(column);
+        Ok(())
+    }
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 struct SpritePixel {
     behind_foreground: bool,
@@ -299,12 +324,25 @@ impl VicPixelPipeline {
             self.fill_border_cycle(physical_cycle_x, border_color, delayed_border_color);
             return Ok(VicPixelCollisions::default());
         }
+        if border_pixel_mask == 0
+            && sprite_display_mask == 0
+            && registers.modes.screen_visible()
+            && registers.modes.valid()
+            && !registers.modes.bitmap()
+            && !registers.modes.multicolor()
+            && !registers.modes.extended_background()
+        {
+            self.render_standard_text_cycle(physical_cycle_x, registers, fetch)?;
+            return Ok(VicPixelCollisions::default());
+        }
 
         let mut collisions = VicPixelCollisions::default();
+        let mut graphics_cache = GraphicsCellCache::default();
         for pixel_in_cycle in 0..PIXELS_PER_VIC_CYCLE {
             let physical_x = physical_cycle_x + pixel_in_cycle;
             let vic_x = physical_x.wrapping_sub(VIC_X_ZERO_PHYSICAL_PIXEL) & VIC_X_COUNTER_MASK;
-            let graphics = Self::resolve_graphics_pixel(vic_x, registers, fetch)?;
+            let graphics =
+                Self::resolve_graphics_pixel(vic_x, registers, fetch, &mut graphics_cache)?;
             let mut output_color = graphics.color;
 
             if sprite_display_mask != 0 {
@@ -393,10 +431,68 @@ impl VicPixelPipeline {
         }
     }
 
+    fn render_standard_text_cycle<S: VicPixelDataSource>(
+        &mut self,
+        physical_cycle_x: u16,
+        registers: &VicPixelRegisters,
+        fetch: &S,
+    ) -> Result<(), VicPixelError> {
+        let background = registers.background_colors[0];
+        let vic_x = physical_cycle_x.wrapping_sub(VIC_X_ZERO_PHYSICAL_PIXEL) & VIC_X_COUNTER_MASK;
+        let display_start =
+            i32::from(vic_x) - TEXT_DISPLAY_VIC_X - i32::from(registers.horizontal_scroll);
+        let mut cycle_pixels = [background; PIXELS_PER_VIC_CYCLE_USIZE];
+        let first_pixel = (-display_start).clamp(0, i32::from(PIXELS_PER_VIC_CYCLE));
+        let final_pixel =
+            (TEXT_DISPLAY_WIDTH - display_start).clamp(0, i32::from(PIXELS_PER_VIC_CYCLE));
+        let mut pixel_offset = usize::try_from(first_pixel)
+            .map_err(|_| VicFetchError::ColumnOutOfRange { column: u8::MAX })?;
+        let final_pixel = usize::try_from(final_pixel)
+            .map_err(|_| VicFetchError::ColumnOutOfRange { column: u8::MAX })?;
+        while pixel_offset < final_pixel {
+            let display_x = display_start
+                + i32::try_from(pixel_offset)
+                    .map_err(|_| VicFetchError::ColumnOutOfRange { column: u8::MAX })?;
+            let column = u8::try_from(display_x / TEXT_COLUMN_WIDTH)
+                .map_err(|_| VicFetchError::ColumnOutOfRange { column: u8::MAX })?;
+            let cell_pixel = u8::try_from(display_x % TEXT_COLUMN_WIDTH)
+                .map_err(|_| VicFetchError::ColumnOutOfRange { column: u8::MAX })?;
+            let color_ram = fetch.color_matrix_nibble(column)?;
+            let graphics = fetch.graphics_byte(column)?;
+            let foreground = registers.palette[usize::from(color_ram)];
+            let pixels_in_cell = usize::from(8 - cell_pixel).min(final_pixel - pixel_offset);
+            for cell_offset in 0..pixels_in_cell {
+                let bit = cell_pixel
+                    + u8::try_from(cell_offset)
+                        .map_err(|_| VicFetchError::ColumnOutOfRange { column: u8::MAX })?;
+                if graphics & (0x80 >> bit) != 0 {
+                    cycle_pixels[pixel_offset + cell_offset] = foreground;
+                }
+            }
+            pixel_offset += pixels_in_cell;
+        }
+
+        let physical_end = physical_cycle_x + PIXELS_PER_VIC_CYCLE;
+        let visible_start = visible_crop_physical_pixel();
+        let visible_end = visible_start + VIC_RASTER_OUTPUT_WIDTH_U16;
+        let clipped_start = physical_cycle_x.max(visible_start);
+        let clipped_end = physical_end.min(visible_end);
+        if clipped_start < clipped_end {
+            let source_start = usize::from(clipped_start - physical_cycle_x);
+            let source_end = usize::from(clipped_end - physical_cycle_x);
+            let output_start = usize::from(clipped_start - visible_start);
+            let output_end = usize::from(clipped_end - visible_start);
+            self.line_pixels[output_start..output_end]
+                .copy_from_slice(&cycle_pixels[source_start..source_end]);
+        }
+        Ok(())
+    }
+
     fn resolve_graphics_pixel<S: VicPixelDataSource>(
         vic_x: u16,
         registers: &VicPixelRegisters,
         fetch: &S,
+        cache: &mut GraphicsCellCache,
     ) -> Result<GraphicsPixel, VicPixelError> {
         let background_0 = registers.background_colors[0];
         if !registers.modes.screen_visible() {
@@ -424,9 +520,10 @@ impl VicPixelPipeline {
             .map_err(|_| VicFetchError::ColumnOutOfRange { column: u8::MAX })?;
         let pixel = u8::try_from(display_x % TEXT_COLUMN_WIDTH)
             .map_err(|_| VicFetchError::ColumnOutOfRange { column: u8::MAX })?;
-        let screen_code = fetch.screen_matrix_byte(column)?;
-        let color_ram = fetch.color_matrix_nibble(column)?;
-        let graphics = fetch.graphics_byte(column)?;
+        cache.load(column, fetch)?;
+        let screen_code = cache.screen_code;
+        let color_ram = cache.color_ram;
+        let graphics = cache.graphics;
 
         let result = if registers.modes.bitmap() {
             if registers.modes.multicolor() {
@@ -625,6 +722,8 @@ const fn pack_rgba_pixel(red: u8, green: u8, blue: u8) -> u32 {
 
 #[cfg(test)]
 mod tests {
+    use core::cell::Cell;
+
     use super::{
         C64_PALETTE, VIC_RASTER_OUTPUT_WIDTH, VicPixelDataSource, VicPixelPipeline,
         VicPixelRegisters,
@@ -653,6 +752,75 @@ mod tests {
         fn sprite_data_word(&self, _sprite_index: u8) -> Result<u32, VicFetchError> {
             Ok(0)
         }
+    }
+
+    #[derive(Default)]
+    struct CountingSource {
+        color: Cell<usize>,
+        graphics: Cell<usize>,
+        screen: Cell<usize>,
+    }
+
+    impl VicPixelDataSource for CountingSource {
+        fn sprite_display_mask(&self) -> u8 {
+            0
+        }
+
+        fn screen_matrix_byte(&self, _column: u8) -> Result<u8, VicFetchError> {
+            self.screen.set(self.screen.get() + 1);
+            Ok(0)
+        }
+
+        fn color_matrix_nibble(&self, column: u8) -> Result<u8, VicFetchError> {
+            self.color.set(self.color.get() + 1);
+            Ok(column + 1)
+        }
+
+        fn graphics_byte(&self, column: u8) -> Result<u8, VicFetchError> {
+            self.graphics.set(self.graphics.get() + 1);
+            Ok(if column == 0 { 0xaa } else { 0x55 })
+        }
+
+        fn sprite_data_word(&self, _sprite_index: u8) -> Result<u32, VicFetchError> {
+            Ok(0)
+        }
+    }
+
+    #[test]
+    fn one_pixel_cycle_reads_each_crossed_character_cell_once() {
+        let mut sequencer = VicCycleSequencer::new();
+        let mut pipeline = VicPixelPipeline::default();
+        let registers = VicPixelRegisters {
+            horizontal_scroll: 3,
+            modes: VicPixelModes::from_display_mode(0, true),
+            ..VicPixelRegisters::default()
+        };
+        let source = CountingSource::default();
+        let mut cycle = sequencer.tick(&VicCycleSignals::default());
+        for _ in 1..19 {
+            cycle = sequencer.tick(&VicCycleSignals::default());
+        }
+
+        pipeline
+            .clock_cycle(&cycle, 0, &registers, &source)
+            .unwrap();
+
+        assert_eq!(source.screen.get(), 0);
+        assert_eq!(source.color.get(), 2);
+        assert_eq!(source.graphics.get(), 2);
+        assert_eq!(
+            &pipeline.pixels()[56..64],
+            &[
+                C64_PALETTE[0],
+                C64_PALETTE[1],
+                C64_PALETTE[0],
+                C64_PALETTE[0],
+                C64_PALETTE[2],
+                C64_PALETTE[0],
+                C64_PALETTE[2],
+                C64_PALETTE[0],
+            ]
+        );
     }
 
     #[test]

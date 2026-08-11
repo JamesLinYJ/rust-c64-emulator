@@ -83,6 +83,64 @@ impl SidEnvelopeGenerator {
         self.envelope_readback
     }
 
+    pub(crate) fn silent_clock_is_batchable(&self) -> bool {
+        self.hold_zero
+            && self.envelope_counter == 0
+            && self.state == EnvelopeState::Release
+            && self.next_state == EnvelopeState::Release
+            && self.state_pipeline == 0
+            && self.envelope_pipeline == 0
+            && self.exponential_pipeline == 0
+    }
+
+    pub(crate) fn clock_silent_cycles(&mut self, cycles: u32) {
+        debug_assert!(self.silent_clock_is_batchable());
+        self.envelope_readback = 0;
+        let mut remaining = cycles;
+        while remaining != 0 {
+            if self.reset_rate_counter {
+                self.rate_counter = 1;
+                self.reset_rate_counter = false;
+                remaining -= 1;
+                continue;
+            }
+            if self.rate_counter == self.rate_period {
+                let repeating_cycles = u32::from(self.rate_period) + 1;
+                if remaining >= repeating_cycles {
+                    remaining %= repeating_cycles;
+                    if remaining == 0 {
+                        return;
+                    }
+                }
+                self.reset_rate_counter = true;
+                remaining -= 1;
+                continue;
+            }
+
+            let distance = if self.rate_counter < self.rate_period {
+                self.rate_period - self.rate_counter
+            } else {
+                RATE_COUNTER_MASK - self.rate_counter + self.rate_period
+            };
+            let advanced = remaining.min(u32::from(distance));
+            self.advance_rate_counter_without_compare(advanced);
+            remaining -= advanced;
+        }
+    }
+
+    fn advance_rate_counter_without_compare(&mut self, cycles: u32) {
+        if cycles == 0 {
+            return;
+        }
+        if self.rate_counter == 0 {
+            self.rate_counter = u16::try_from(cycles).unwrap_or(RATE_COUNTER_MASK);
+            return;
+        }
+        let ring_length = u32::from(RATE_COUNTER_MASK);
+        let position = (u32::from(self.rate_counter) - 1 + cycles) % ring_length;
+        self.rate_counter = u16::try_from(position + 1).unwrap_or(RATE_COUNTER_MASK);
+    }
+
     /// `/RES` 不连接八位包络计数器，因此保留当前模拟电平，只复位控制状态。
     pub fn reset(&mut self) {
         self.attack = 0;
@@ -152,9 +210,17 @@ impl SidEnvelopeGenerator {
         }
     }
 
+    #[inline]
     pub fn clock_cycle(&mut self) {
         self.envelope_readback = self.envelope_counter;
+        if self.clock_held_zero_release() {
+            return;
+        }
+        self.clock_active_cycle();
+    }
 
+    #[cfg_attr(target_arch = "wasm32", inline(never))]
+    fn clock_active_cycle(&mut self) {
         if self.state_pipeline != 0 {
             self.advance_state_pipeline();
         }
@@ -213,6 +279,32 @@ impl SidEnvelopeGenerator {
                 self.rate_counter = self.rate_counter.wrapping_add(1) & RATE_COUNTER_MASK;
             }
         }
+    }
+
+    #[inline]
+    fn clock_held_zero_release(&mut self) -> bool {
+        if !self.hold_zero
+            || self.state != EnvelopeState::Release
+            || self.next_state != EnvelopeState::Release
+            || self.state_pipeline != 0
+            || self.envelope_pipeline != 0
+            || self.exponential_pipeline != 0
+        {
+            return false;
+        }
+
+        if self.reset_rate_counter {
+            self.rate_counter = 1;
+            self.reset_rate_counter = false;
+        } else if self.rate_counter == self.rate_period {
+            self.reset_rate_counter = true;
+        } else {
+            self.rate_counter += 1;
+            if self.rate_counter & RATE_COUNTER_OVERFLOW_BIT != 0 {
+                self.rate_counter = self.rate_counter.wrapping_add(1) & RATE_COUNTER_MASK;
+            }
+        }
+        true
     }
 
     fn advance_state_pipeline(&mut self) {
@@ -292,5 +384,27 @@ mod tests {
             }
         }
         assert!(observed_pipeline_delay);
+    }
+
+    #[test]
+    fn held_zero_release_keeps_zero_output_while_the_rate_counter_runs() {
+        let mut envelope = SidEnvelopeGenerator::new();
+        for _ in 0..2_000_000 {
+            envelope.clock_cycle();
+        }
+        assert_eq!(envelope.output(), 0);
+        assert!(envelope.silent_clock_is_batchable());
+        envelope.write_sustain_release(0x0f);
+        let mut stepped = envelope.clone();
+        let mut batched = envelope;
+
+        for _ in 0..100_000 {
+            stepped.clock_cycle();
+            assert_eq!(stepped.output(), 0);
+            assert_eq!(stepped.readback(), 0);
+        }
+        batched.clock_silent_cycles(100_000);
+
+        assert_eq!(batched, stepped);
     }
 }

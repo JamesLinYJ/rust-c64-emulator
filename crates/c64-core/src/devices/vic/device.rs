@@ -12,12 +12,12 @@ use core::fmt;
 
 use super::{
     C64_PALETTE, NTSC_FIRST_VISIBLE_RASTER, NTSC_LAST_VISIBLE_RASTER_EXCLUSIVE,
-    NTSC_RASTER_OUTPUT_HEIGHT, NTSC_VIC_TIMING, PAL_CYCLES_PER_RASTER_LINE,
-    PAL_FIRST_VISIBLE_RASTER, PAL_LAST_VISIBLE_RASTER_EXCLUSIVE, PAL_RASTER_OUTPUT_HEIGHT,
-    PAL_VIC_TIMING, SPRITE_COUNT, VIC_RASTER_OUTPUT_WIDTH, VicBorderController, VicBorderSignals,
-    VicCycleResult, VicCycleSequencer, VicCycleSignals, VicFetchError, VicFetchPipeline,
-    VicFetchRegisters, VicFetchSnapshot, VicMemoryBus, VicPixelError, VicPixelModes,
-    VicPixelPipeline, VicPixelRegisters, VicSprite, VicTiming,
+    NTSC_RASTER_OUTPUT_HEIGHT, PAL_CYCLES_PER_RASTER_LINE, PAL_FIRST_VISIBLE_RASTER,
+    PAL_LAST_VISIBLE_RASTER_EXCLUSIVE, PAL_RASTER_OUTPUT_HEIGHT, PAL_VIC_TIMING, SPRITE_COUNT,
+    VIC_RASTER_OUTPUT_WIDTH, VicBorderController, VicBorderSignals, VicCycleResult,
+    VicCycleSequencer, VicCycleSignals, VicFetchError, VicFetchPipeline, VicFetchRegisters,
+    VicFetchSnapshot, VicMemoryBus, VicPixelError, VicPixelModes, VicPixelPipeline,
+    VicPixelRegisters, VicSprite, VicTiming,
 };
 
 pub const VIC_REGISTER_COUNT: usize = 0x40;
@@ -282,12 +282,18 @@ impl VicII {
         &mut self,
         memory: &mut M,
     ) -> Result<VicCycleResult, VicError> {
+        let screen_visible = self.screen_visible();
+        let sprite_enable_mask = self.registers[usize::from(SPRITE_ENABLE)];
         let signals = VicCycleSignals {
-            display_enabled: self.screen_visible(),
-            sprite_enable_mask: self.registers[usize::from(SPRITE_ENABLE)],
+            display_enabled: screen_visible,
+            sprite_enable_mask,
             sprite_vertical_expansion_mask: self.registers[usize::from(SPRITE_EXPAND_VERTICAL)],
             vertical_scroll: self.vertical_scroll(),
-            sprite_y: self.pixel_registers.sprites.map(|sprite| sprite.y),
+            sprite_y: if sprite_enable_mask == 0 {
+                [0; SPRITE_COUNT as usize]
+            } else {
+                core::array::from_fn(|index| self.pixel_registers.sprites[index].y)
+            },
         };
         let cycle = self.cycle_sequencer.tick(&signals);
         self.fetch_pipeline.execute_cycle(
@@ -303,7 +309,7 @@ impl VicII {
         )?;
         let border_pixel_mask = self.border_controller.tick(VicBorderSignals {
             column_select: self.standard_column_mode(),
-            display_enabled: self.screen_visible(),
+            display_enabled: screen_visible,
             raster_cycle: cycle.cycle,
             raster_line: cycle.raster_line,
             row_select: self.standard_row_mode(),
@@ -725,7 +731,7 @@ impl VicII {
 }
 
 fn visible_raster_range(timing: VicTiming) -> (u16, u16) {
-    if timing == NTSC_VIC_TIMING {
+    if timing.is_ntsc() {
         (
             NTSC_FIRST_VISIBLE_RASTER,
             NTSC_LAST_VISIBLE_RASTER_EXCLUSIVE,
@@ -736,7 +742,7 @@ fn visible_raster_range(timing: VicTiming) -> (u16, u16) {
 }
 
 fn raster_output_height(timing: VicTiming) -> usize {
-    if timing == NTSC_VIC_TIMING {
+    if timing.is_ntsc() {
         NTSC_RASTER_OUTPUT_HEIGHT
     } else {
         PAL_RASTER_OUTPUT_HEIGHT

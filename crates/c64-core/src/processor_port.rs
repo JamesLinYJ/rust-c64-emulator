@@ -118,6 +118,9 @@ impl ProcessorPort6510 {
     }
 
     pub fn tick(&mut self, cycles: u32) {
+        if self.bit6_fall_off_remaining == 0 && self.bit7_fall_off_remaining == 0 {
+            return;
+        }
         self.bit6_fall_off_remaining = discharge_floating_pin(
             cycles,
             self.bit6_fall_off_remaining,

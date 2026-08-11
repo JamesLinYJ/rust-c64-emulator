@@ -102,7 +102,9 @@ impl SidAudioResampler {
 
     pub fn push_pcm(&mut self, input_pcm: i32) -> Option<f32> {
         if self.output_rate_hz < self.weight_until_output {
-            self.accumulated_area += i64::from(input_pcm) * i64::from(self.output_rate_hz);
+            if input_pcm != 0 {
+                self.accumulated_area += i64::from(input_pcm) * i64::from(self.output_rate_hz);
+            }
             self.accumulated_weight += self.output_rate_hz;
             self.weight_until_output -= self.output_rate_hz;
             return None;
@@ -112,23 +114,46 @@ impl SidAudioResampler {
         let mut output = None;
         while input_weight_remaining > 0 {
             let consumed_weight = input_weight_remaining.min(self.weight_until_output);
-            self.accumulated_area += i64::from(input_pcm) * i64::from(consumed_weight);
+            if input_pcm != 0 {
+                self.accumulated_area += i64::from(input_pcm) * i64::from(consumed_weight);
+            }
             self.accumulated_weight += consumed_weight;
             input_weight_remaining -= consumed_weight;
             self.weight_until_output -= consumed_weight;
 
             if self.weight_until_output == 0 {
                 debug_assert_eq!(self.accumulated_weight, self.input_rate_hz);
-                output = Some(normalize_area(
-                    self.accumulated_area,
-                    self.accumulated_weight,
-                ));
+                output = Some(if self.accumulated_area == 0 {
+                    0.0
+                } else {
+                    normalize_area(self.accumulated_area, self.accumulated_weight)
+                });
                 self.accumulated_area = 0;
                 self.accumulated_weight = 0;
                 self.weight_until_output = self.input_rate_hz;
             }
         }
         output
+    }
+
+    pub(crate) fn push_zero_pcm_cycles(&mut self, mut cycles: u32, mut emit: impl FnMut(f32)) {
+        while cycles != 0 {
+            if self.output_rate_hz < self.weight_until_output {
+                let skipped_cycles =
+                    ((self.weight_until_output - 1) / self.output_rate_hz).min(cycles);
+                let skipped_weight = skipped_cycles * self.output_rate_hz;
+                self.accumulated_weight += skipped_weight;
+                self.weight_until_output -= skipped_weight;
+                cycles -= skipped_cycles;
+            }
+            if cycles == 0 {
+                break;
+            }
+            if let Some(sample) = self.push_pcm(0) {
+                emit(sample);
+            }
+            cycles -= 1;
+        }
     }
 }
 
@@ -175,6 +200,41 @@ mod tests {
         let expected = normalize_area(i64::from(i16::MAX) * 4, 5);
         assert_eq!(output[0].to_bits(), expected.to_bits());
         assert_eq!(output[1].to_bits(), 0_f32.to_bits());
+    }
+
+    #[test]
+    fn preserves_exact_zero_at_a_non_integer_ratio() {
+        let mut resampler = SidAudioResampler::new(985_248, 44_100).expect("valid rates");
+        let output: Vec<f32> = (0..985_248).filter_map(|_| resampler.push_pcm(0)).collect();
+
+        assert_eq!(output.len(), 44_100);
+        assert!(
+            output
+                .iter()
+                .all(|sample| sample.to_bits() == 0_f32.to_bits())
+        );
+    }
+
+    #[test]
+    fn batched_zero_input_matches_individual_cycles_from_a_partial_interval() {
+        let mut initial = SidAudioResampler::new(985_248, 44_100).expect("valid rates");
+        for _ in 0..7 {
+            initial.push_pcm(12_345);
+        }
+        let mut stepped = initial.clone();
+        let mut batched = initial;
+        let mut stepped_output = Vec::new();
+        let mut batched_output = Vec::new();
+
+        for _ in 0..20_000 {
+            if let Some(sample) = stepped.push_pcm(0) {
+                stepped_output.push(sample);
+            }
+        }
+        batched.push_zero_pcm_cycles(20_000, |sample| batched_output.push(sample));
+
+        assert_eq!(batched, stepped);
+        assert_eq!(batched_output, stepped_output);
     }
 
     #[test]

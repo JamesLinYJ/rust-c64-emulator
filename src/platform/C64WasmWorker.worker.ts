@@ -68,9 +68,15 @@ let sampleRate = 0;
 let scheduledFrameDurationMs = 0;
 let state: C64WorkerState = 'paused';
 let timer: number | undefined;
+let frameScheduleToken = 0;
 let nextFrameDeadline = 0;
 let disposed = false;
 const cancelledRequests = new Set<number>();
+const frameTaskChannel = new MessageChannel();
+
+frameTaskChannel.port1.onmessage = (event: MessageEvent<number>) => {
+  runScheduledFrame(event.data);
+};
 
 scope.addEventListener('message', (event) => {
   void handleCommand(event.data).catch((error: unknown) => publishFatalError(error));
@@ -198,11 +204,19 @@ function pause(): void {
 
 function scheduleFrame(delayMs: number): void {
   clearScheduledFrame();
-  timer = setTimeout(runScheduledFrame, delayMs);
+  const token = frameScheduleToken;
+  if (delayMs <= 0) {
+    frameTaskChannel.port2.postMessage(token);
+    return;
+  }
+  timer = setTimeout(() => {
+    timer = undefined;
+    if (token === frameScheduleToken) frameTaskChannel.port2.postMessage(token);
+  }, delayMs);
 }
 
-function runScheduledFrame(): void {
-  timer = undefined;
+function runScheduledFrame(token: number): void {
+  if (token !== frameScheduleToken) return;
   if (state !== 'running' || disposed) return;
   if (!produceFrame(true)) {
     scheduleFrame(1);
@@ -370,6 +384,7 @@ function errorMessage(error: unknown): string {
 }
 
 function clearScheduledFrame(): void {
+  frameScheduleToken += 1;
   if (timer === undefined) return;
   clearTimeout(timer);
   timer = undefined;
@@ -385,6 +400,8 @@ function dispose(): void {
   wasmMemory = undefined;
   frameBuffers = undefined;
   audioBuffers = undefined;
+  frameTaskChannel.port1.close();
+  frameTaskChannel.port2.close();
   scope.close();
 }
 

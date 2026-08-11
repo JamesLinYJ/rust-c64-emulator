@@ -28,6 +28,8 @@ interface BrowserTarget {
 
 interface RuntimeMetrics {
   readonly framesPerSecond: number;
+  readonly overBudgetFrames: number;
+  readonly p95Ms: number;
   readonly sampledFrames: number;
 }
 
@@ -36,7 +38,7 @@ const BASIC_BOOT_TIMEOUT_MS = 45_000;
 const PROGRAM_LOAD_TIMEOUT_MS = 45_000;
 const PROGRAM_START_TIMEOUT_MS = 10_000;
 const PROGRAM_COUNTER_PATTERN = /PC \$([0-9A-F]{4})/u;
-const RUNTIME_METRICS_PATTERN = /呈现\s+(\d+)\s+FPS.*?超预算\s+\d+\/(\d+)/u;
+const RUNTIME_METRICS_PATTERN = /呈现\s+(\d+)\s+FPS.*?p95\s+([\d.]+)\s+ms.*?超预算\s+(\d+)\/(\d+)/u;
 const MINIMUM_PAL_FRAMES_PER_SECOND = 45;
 const MAXIMUM_PAL_FRAMES_PER_SECOND = 55;
 const MINIMUM_SAMPLED_FRAMES = 20;
@@ -58,7 +60,7 @@ const BROWSER_TARGETS = {
     browserType: firefox,
     label: 'Mozilla Firefox',
     launchOptions: { headless: true },
-    realtimePalRequired: false,
+    realtimePalRequired: true,
   },
   webkit: {
     browserType: webkit,
@@ -125,7 +127,8 @@ async function verifyBrowserTarget(target: BrowserTarget): Promise<void> {
     }
     console.log(
       `PASS ${target.label}: production module Worker/Wasm, ${metrics.framesPerSecond} host FPS, ` +
-        `${metrics.sampledFrames} sampled frames, PRG PC $${programCounter
+        `p95 ${metrics.p95Ms.toFixed(2)} ms, ` +
+        `${metrics.overBudgetFrames}/${metrics.sampledFrames} over budget, PRG PC $${programCounter
           .toString(16)
           .toUpperCase()
           .padStart(4, '0')}.`,
@@ -199,15 +202,18 @@ async function waitForRuntimeMetrics(
     const match = RUNTIME_METRICS_PATTERN.exec(latestText);
     if (match) {
       const framesPerSecond = Number.parseInt(match[1] ?? '', 10);
-      const sampledFrames = Number.parseInt(match[2] ?? '', 10);
+      const p95Ms = Number.parseFloat(match[2] ?? '');
+      const overBudgetFrames = Number.parseInt(match[3] ?? '', 10);
+      const sampledFrames = Number.parseInt(match[4] ?? '', 10);
       if (
         framesPerSecond > 0 &&
+        Number.isFinite(p95Ms) &&
         (!realtimePalRequired ||
           (framesPerSecond >= MINIMUM_PAL_FRAMES_PER_SECOND &&
             framesPerSecond <= MAXIMUM_PAL_FRAMES_PER_SECOND)) &&
         sampledFrames >= MINIMUM_SAMPLED_FRAMES
       ) {
-        return { framesPerSecond, sampledFrames };
+        return { framesPerSecond, overBudgetFrames, p95Ms, sampledFrames };
       }
     }
     await page.waitForTimeout(100);

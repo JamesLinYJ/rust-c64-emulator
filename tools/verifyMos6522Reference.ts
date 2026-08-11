@@ -9,7 +9,6 @@
 // --------------------------------------------------------------------------
 
 import { createHash } from 'node:crypto';
-import { execFileSync } from 'node:child_process';
 import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import { dirname, resolve } from 'node:path';
 
@@ -29,6 +28,7 @@ import {
   Drive1541Memory,
 } from '../src/peripherals/drive1541/Drive1541Memory';
 import { IecBus, IEC_LINE } from '../src/peripherals/iec/IecBus';
+import { runRustJsonTrace } from './runRustJsonTrace';
 
 interface Mos6522ReferenceFile {
   readonly byteLength: number;
@@ -452,22 +452,18 @@ function replayReferenceCase(
   }
 }
 
-function replayRustReferenceCases(replays: readonly ReplayProgram[]): readonly Uint8Array[] {
-  const output = execFileSync(
-    'cargo',
-    ['run', '--quiet', '--locked', '-p', 'c64-core', '--example', 'vice_1541_via'],
-    {
-      encoding: 'utf8',
-      input: JSON.stringify(
-        replays.map((replay) => ({
-          program: [...replay.bytes],
-          stopAddress: replay.stopAddress,
-        })),
-      ),
-      maxBuffer: 4 * 1024 * 1024,
-    },
-  );
-  const results = JSON.parse(output) as readonly RustReplayResult[];
+async function replayRustReferenceCases(
+  replays: readonly ReplayProgram[],
+): Promise<readonly Uint8Array[]> {
+  const results = await runRustJsonTrace<readonly RustReplayResult[]>({
+    example: 'vice_1541_via',
+    input: replays.map((replay) => ({
+      program: [...replay.bytes],
+      stopAddress: replay.stopAddress,
+    })),
+    label: 'Rust 1541 VIA replay',
+    maximumOutputBytes: 4 * 1024 * 1024,
+  });
   if (results.length !== replays.length) {
     throw new Error(
       `Rust 1541 VIA replay returned ${results.length} cases for ${replays.length} requests.`,
@@ -514,14 +510,14 @@ async function loadFixtures<Reference extends Mos6522ReferenceFile>(
   );
 }
 
-function verifyFixtures<Reference extends Mos6522ReferenceFile>(
+async function verifyFixtures<Reference extends Mos6522ReferenceFile>(
   fixtures: readonly LoadedReference<Reference>[],
   buildReplay: (reference: Reference, caseIndex: number) => ReplayProgram,
-): number {
+): Promise<number> {
   const replays = fixtures.flatMap((fixture) =>
     fixture.cases.map((_expected, caseIndex) => buildReplay(fixture.reference, caseIndex)),
   );
-  const rustResults = replayRustReferenceCases(replays);
+  const rustResults = await replayRustReferenceCases(replays);
   let verifiedCases = 0;
   let replayIndex = 0;
   for (const fixture of fixtures) {
@@ -556,8 +552,8 @@ async function main(): Promise<void> {
     loadFixtures(PB7_REFERENCES),
     loadFixtures(TIMER_REFERENCES),
   ]);
-  const pb7Cases = verifyFixtures(pb7Fixtures, buildPb7ReplayProgram);
-  const timerCases = verifyFixtures(timerFixtures, buildTimerReplayProgram);
+  const pb7Cases = await verifyFixtures(pb7Fixtures, buildPb7ReplayProgram);
+  const timerCases = await verifyFixtures(timerFixtures, buildTimerReplayProgram);
 
   console.log(
     `PASS TypeScript/Rust MOS 6522 reference: ${pb7Cases} PB7 pages and ${timerCases} timer/IFR pages from real 1541 hardware at VICE revision ${VICE_TEST_REVISION}.`,

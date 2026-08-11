@@ -46,6 +46,10 @@ pub struct SidMos6581Filter {
     resonance_routing: u8,
     mode_volume: u8,
     output_pcm_state: i16,
+    #[wincode(skip(default_val = default_zero_capacitor_op_amp_input()))]
+    zero_capacitor_op_amp_input: u16,
+    #[wincode(skip(default_val = default_zero_input_output()))]
+    default_zero_input_output: i16,
 }
 
 impl fmt::Debug for SidMos6581Filter {
@@ -63,6 +67,11 @@ impl fmt::Debug for SidMos6581Filter {
             .field("resonance_routing", &self.resonance_routing)
             .field("mode_volume", &self.mode_volume)
             .field("output_pcm_state", &self.output_pcm_state)
+            .field(
+                "zero_capacitor_op_amp_input",
+                &self.zero_capacitor_op_amp_input,
+            )
+            .field("default_zero_input_output", &self.default_zero_input_output)
             .finish()
     }
 }
@@ -104,6 +113,8 @@ impl SidMos6581Filter {
             resonance_routing: 0,
             mode_volume: 0,
             output_pcm_state: 0,
+            zero_capacitor_op_amp_input: default_zero_capacitor_op_amp_input(),
+            default_zero_input_output: default_zero_input_output(),
         };
         result.reset();
         result
@@ -162,9 +173,19 @@ impl SidMos6581Filter {
         voice_3: i32,
         external_input: Option<i32>,
     ) -> i16 {
-        let voice_1_voltage = self.model.scale_voice(voice_1);
-        let voice_2_voltage = self.model.scale_voice(voice_2);
-        let voice_3_voltage = self.model.scale_voice(voice_3);
+        if voice_1 == 0
+            && voice_2 == 0
+            && voice_3 == 0
+            && external_input.is_none()
+            && self.default_zero_input_is_stationary()
+        {
+            return self.output_pcm_state;
+        }
+
+        let model = shared_mos6581_filter_model();
+        let voice_1_voltage = model.scale_voice(voice_1);
+        let voice_2_voltage = model.scale_voice(voice_2);
+        let voice_3_voltage = model.scale_voice(voice_3);
         let mut filter_input_count = 0_usize;
         let mut filter_input_voltage = 0_i32;
         let mut mixer_input_count = 0_usize;
@@ -196,7 +217,7 @@ impl SidMos6581Filter {
         if let Some(external_input) = external_input {
             route_input(
                 self.resonance_routing & filter_bit::EXTERNAL_INPUT != 0,
-                self.model.scale_external_input(external_input),
+                model.scale_external_input(external_input),
                 &mut filter_input_count,
                 &mut filter_input_voltage,
                 &mut mixer_input_count,
@@ -204,19 +225,19 @@ impl SidMos6581Filter {
             );
         }
 
-        self.low_pass_voltage = self.model.integrate(
+        self.low_pass_voltage = model.integrate(
             self.band_pass_voltage,
             &mut self.low_pass_integrator,
             self.cutoff_voltage_squared,
         );
-        self.band_pass_voltage = self.model.integrate(
+        self.band_pass_voltage = model.integrate(
             self.high_pass_voltage,
             &mut self.band_pass_integrator,
             self.cutoff_voltage_squared,
         );
         let resonance = (self.resonance_routing >> 4) & 0x0f;
-        let resonance_voltage = self.model.resonance_gain(resonance, self.band_pass_voltage);
-        self.high_pass_voltage = self.model.sum_filter_inputs(
+        let resonance_voltage = model.resonance_gain(resonance, self.band_pass_voltage);
+        self.high_pass_voltage = model.sum_filter_inputs(
             filter_input_count,
             resonance_voltage + self.low_pass_voltage + filter_input_voltage,
         );
@@ -234,14 +255,35 @@ impl SidMos6581Filter {
             mixer_input_voltage += self.high_pass_voltage;
         }
 
-        let mixed_voltage = self
-            .model
-            .mix_audio_inputs(mixer_input_count, mixer_input_voltage);
-        self.output_pcm_state = self
-            .model
-            .apply_volume(self.mode_volume & 0x0f, mixed_voltage);
+        let mixed_voltage = model.mix_audio_inputs(mixer_input_count, mixer_input_voltage);
+        self.output_pcm_state = model.apply_volume(self.mode_volume & 0x0f, mixed_voltage);
         self.output_pcm_state
     }
+
+    pub(crate) fn default_zero_input_is_stationary(&self) -> bool {
+        if self.cutoff_register != 0 || self.resonance_routing != 0 || self.mode_volume != 0 {
+            return false;
+        }
+        let equilibrium = self.zero_capacitor_op_amp_input;
+        let equilibrium_voltage = i32::from(equilibrium);
+        self.band_pass_integrator
+            .is_zero_capacitor_equilibrium(equilibrium)
+            && self
+                .low_pass_integrator
+                .is_zero_capacitor_equilibrium(equilibrium)
+            && self.band_pass_voltage == equilibrium_voltage
+            && self.high_pass_voltage == equilibrium_voltage
+            && self.low_pass_voltage == equilibrium_voltage
+            && self.output_pcm_state == self.default_zero_input_output
+    }
+}
+
+fn default_zero_capacitor_op_amp_input() -> u16 {
+    shared_mos6581_filter_model().zero_capacitor_op_amp_input()
+}
+
+fn default_zero_input_output() -> i16 {
+    shared_mos6581_filter_model().default_zero_input_output()
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -285,5 +327,17 @@ mod tests {
             .collect();
 
         assert_eq!(actual, expected);
+    }
+
+    #[test]
+    fn zero_input_default_filter_reaches_an_exact_fixed_point() {
+        let mut filter = SidMos6581Filter::new();
+        filter.clock(0, 0, 0, None);
+        let expected = filter.clone();
+        for _ in 0..4_096 {
+            filter.clock(0, 0, 0, None);
+        }
+
+        assert_eq!(filter, expected);
     }
 }

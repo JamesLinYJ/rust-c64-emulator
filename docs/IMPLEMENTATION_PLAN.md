@@ -129,6 +129,17 @@ AudioWorklet 欠载/溢出计数为零。Firefox 功能路径从 12 提升到 18
 远端跨浏览器 CI 通过前，本增补也不能视为最终验收。因此 M4 总验收仍缺 Firefox 实时性能，
 不得据此宣称平台运行时整体完成。
 
+Firefox 实时候选增补（2026年08月12日）：提交 `359df13` 已由远端
+[CI run 31515753152](https://github.com/JamesLinYJ/rust-c64-emulator/actions/runs/31515753152)
+的五个 job 验收。后续候选工作树在不改变公开硬件语义的前提下，为 CPU 被动读、VIC 稳态、
+CIA 处理器时钟/TOD 与 SID 静音周期增加精确批处理和派生状态校验；生产 Worker 改用
+`MessageChannel` 投递帧任务，消除嵌套 `setTimeout` 的浏览器定时器钳制。相同的无 source-map
+Sites 产物在 Google Chrome、Microsoft Edge 和 Mozilla Firefox 均达到 50 host FPS；本次 Firefox
+p95 为 20.00 ms、120 帧中 9 帧超预算，并完成 BASIC PRG 路径。本地 `npm run check`、
+`npm run verify:wasm`、固定版本完整参考链和 326,815-byte Wasm 打包均通过。Fedora 45 本机缺少
+Playwright WebKit 固定依赖的 ICU 74/libjpeg 8，因此 M4 仍须等待 PR #6 远端 WebKit 与全 CI
+验收后才能关闭。
+
 ## M5：SuperCPU
 
 - [ ] 实现 W65C816 emulation/native、24 位地址、M/X、寄存器、向量和周期。

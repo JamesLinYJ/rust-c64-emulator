@@ -207,6 +207,10 @@ impl Sid {
     }
 
     pub fn clock_cycles(&mut self, cycles: u32) {
+        if cycles != 0 && self.silent_clock_is_batchable() {
+            self.clock_silent_cycles(cycles);
+            return;
+        }
         for _ in 0..cycles {
             self.clock_cycle();
         }
@@ -214,30 +218,19 @@ impl Sid {
 
     /// Clock one complete SID chip cycle without crossing any host boundary.
     pub fn clock_cycle(&mut self) {
+        let oscillators_quiescent = self
+            .voices
+            .iter()
+            .all(SidVoice::oscillator_clock_is_quiescent);
         for voice in &mut self.voices {
             voice.clock_envelope();
-            voice.clock_oscillator();
-        }
-
-        let rising: [bool; SID_VOICE_COUNT] =
-            std::array::from_fn(|index| self.voices[index].oscillator_msb_rising());
-        let sync: [bool; SID_VOICE_COUNT] =
-            std::array::from_fn(|index| self.voices[index].oscillator_sync_enabled());
-        let reset = [
-            rising[2] && sync[0] && !(sync[2] && rising[1]),
-            rising[0] && sync[1] && !(sync[0] && rising[2]),
-            rising[1] && sync[2] && !(sync[1] && rising[0]),
-        ];
-        for (voice, reset_accumulator) in self.voices.iter_mut().zip(reset) {
-            if reset_accumulator {
-                voice.reset_accumulator_for_sync();
+            if !oscillators_quiescent {
+                voice.clock_oscillator();
             }
         }
-        let accumulators: [u32; SID_VOICE_COUNT] =
-            std::array::from_fn(|index| self.voices[index].accumulator());
-        for index in 0..SID_VOICE_COUNT {
-            self.voices[index]
-                .update_waveform_output_with_sync_source(accumulators[source_index(index)]);
+
+        if !oscillators_quiescent {
+            self.synchronize_oscillators();
         }
 
         let filter_output = self.filter.clock(
@@ -255,7 +248,9 @@ impl Sid {
         if let Some(sample) = self.resampler.push_pcm(board_output) {
             self.samples.push(sample);
         }
-        self.bus_latch_cycles_remaining = self.bus_latch_cycles_remaining.saturating_sub(1);
+        if self.bus_latch_cycles_remaining != 0 {
+            self.bus_latch_cycles_remaining -= 1;
+        }
     }
 
     pub fn read(&mut self, address: u16) -> u8 {
@@ -331,6 +326,51 @@ impl Sid {
             }
             _ => {}
         }
+    }
+
+    fn synchronize_oscillators(&mut self) {
+        let rising_0 = self.voices[0].oscillator_msb_rising();
+        let rising_1 = self.voices[1].oscillator_msb_rising();
+        let rising_2 = self.voices[2].oscillator_msb_rising();
+        let sync_0 = self.voices[0].oscillator_sync_enabled();
+        let sync_1 = self.voices[1].oscillator_sync_enabled();
+        let sync_2 = self.voices[2].oscillator_sync_enabled();
+        if rising_2 && sync_0 && !(sync_2 && rising_1) {
+            self.voices[0].reset_accumulator_for_sync();
+        }
+        if rising_0 && sync_1 && !(sync_0 && rising_2) {
+            self.voices[1].reset_accumulator_for_sync();
+        }
+        if rising_1 && sync_2 && !(sync_1 && rising_0) {
+            self.voices[2].reset_accumulator_for_sync();
+        }
+
+        let accumulator_0 = self.voices[0].accumulator();
+        let accumulator_1 = self.voices[1].accumulator();
+        let accumulator_2 = self.voices[2].accumulator();
+        self.voices[0].update_waveform_output_with_sync_source(accumulator_2);
+        self.voices[1].update_waveform_output_with_sync_source(accumulator_0);
+        self.voices[2].update_waveform_output_with_sync_source(accumulator_1);
+    }
+
+    fn silent_clock_is_batchable(&self) -> bool {
+        self.voices.iter().all(SidVoice::silent_clock_is_batchable)
+            && self.filter.zero_input_is_stationary()
+            && self
+                .external_filter
+                .constant_input_is_stationary(self.filter.output_pcm())
+    }
+
+    fn clock_silent_cycles(&mut self, cycles: u32) {
+        debug_assert!(self.silent_clock_is_batchable());
+        for voice in &mut self.voices {
+            voice.clock_silent_cycles(cycles);
+        }
+        let (resampler, samples) = (&mut self.resampler, &mut self.samples);
+        resampler.push_zero_pcm_cycles(cycles, |sample| {
+            samples.push(sample);
+        });
+        self.bus_latch_cycles_remaining = self.bus_latch_cycles_remaining.saturating_sub(cycles);
     }
 
     fn update_filter_registers(&mut self) {
@@ -436,5 +476,22 @@ mod tests {
                     .all(|sample| sample.is_finite() && sample.abs() <= 1.0)
             );
         }
+    }
+
+    #[test]
+    fn batched_stable_silence_matches_individual_chip_cycles() {
+        let mut initial = Sid::default();
+        initial.clock_cycles(120_000);
+        initial.drain_samples(None);
+        assert!(initial.silent_clock_is_batchable());
+        let mut stepped = initial.clone();
+        let mut batched = initial;
+
+        for _ in 0..20_000 {
+            stepped.clock_cycle();
+        }
+        batched.clock_cycles(20_000);
+
+        assert_eq!(batched, stepped);
     }
 }

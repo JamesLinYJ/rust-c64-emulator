@@ -8,7 +8,7 @@
 //   作者:       OpenAI Codex
 // --------------------------------------------------------------------------
 
-import { spawnSync } from 'node:child_process';
+import { runRustJsonTraceSync } from './runRustJsonTrace';
 
 import { VicCycleSequencer } from '../src/devices/VicCycleSequencer';
 import {
@@ -208,21 +208,12 @@ function runTypeScript(operations: readonly Operation[]): readonly Observation[]
 }
 
 function runRust(operations: readonly Operation[]): readonly Observation[] {
-  const result = spawnSync(
-    'cargo',
-    ['run', '--quiet', '--locked', '-p', 'c64-core', '--example', 'vic_fetch_trace'],
-    {
-      cwd: process.cwd(),
-      encoding: 'utf8',
-      input: JSON.stringify(operations),
-      maxBuffer: 64 * 1024 * 1024,
-    },
-  );
-  if (result.error) throw result.error;
-  if (result.status !== 0) {
-    throw new Error(`Rust VIC fetch adapter failed (${String(result.status)}):\n${result.stderr}`);
-  }
-  return JSON.parse(result.stdout) as readonly Observation[];
+  return runRustJsonTraceSync<readonly Observation[]>({
+    example: 'vic_fetch_trace',
+    input: operations,
+    label: 'Rust VIC fetch adapter',
+    maximumOutputBytes: 64 * 1024 * 1024,
+  });
 }
 
 const operations = buildOperations();

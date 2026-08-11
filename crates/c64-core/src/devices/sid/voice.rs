@@ -88,6 +88,9 @@ impl SidVoice {
 
     /// Multiplying DAC level presented to the model-specific analog filter.
     pub fn analog_output(&self) -> i32 {
+        if self.envelope.output() == 0 {
+            return 0;
+        }
         (i32::from(self.oscillator.waveform_output()) - self.waveform_dac_zero)
             * i32::from(self.envelope.output())
     }
@@ -125,6 +128,19 @@ impl SidVoice {
 
     pub fn clock_oscillator(&mut self) {
         self.oscillator.clock_cycle();
+    }
+
+    pub(crate) const fn oscillator_clock_is_quiescent(&self) -> bool {
+        self.oscillator.clock_is_quiescent()
+    }
+
+    pub(crate) fn silent_clock_is_batchable(&self) -> bool {
+        self.oscillator.clock_is_quiescent() && self.envelope.silent_clock_is_batchable()
+    }
+
+    pub(crate) fn clock_silent_cycles(&mut self, cycles: u32) {
+        debug_assert!(self.silent_clock_is_batchable());
+        self.envelope.clock_silent_cycles(cycles);
     }
 
     pub fn reset_accumulator_for_sync(&mut self) {

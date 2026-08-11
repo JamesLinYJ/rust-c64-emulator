@@ -91,6 +91,11 @@ impl SidExternalFilter {
         (self.low_pass_state - self.high_pass_state) >> STATE_FRACTION_BITS
     }
 
+    pub(crate) fn constant_input_is_stationary(&self, input_pcm: i16) -> bool {
+        let scaled_input = i64::from(input_pcm) * STATE_SCALE;
+        self.low_pass_state == scaled_input && self.high_pass_state == scaled_input
+    }
+
     pub fn reset(&mut self) {
         self.low_pass_state = 0;
         self.high_pass_state = 0;
@@ -107,6 +112,9 @@ impl SidExternalFilter {
     /// Hot path for an input already clamped by the internal SID filter.
     pub fn clock_pcm(&mut self, input_pcm: i16) -> i64 {
         let scaled_input = i64::from(input_pcm) * STATE_SCALE;
+        if self.low_pass_state == scaled_input && self.high_pass_state == scaled_input {
+            return 0;
+        }
         let low_pass_delta = (self.low_pass_coefficient * (scaled_input - self.low_pass_state))
             >> LOW_PASS_COEFFICIENT_BITS;
         let high_pass_delta = (self.high_pass_coefficient
@@ -151,5 +159,21 @@ mod tests {
 
         assert!(filter.clock(0x8000).is_err());
         assert!(filter.clock(-0x8001).is_err());
+    }
+
+    #[test]
+    fn constant_input_reaches_an_exact_fixed_point() {
+        let mut filter = SidExternalFilter::new(985_248).expect("valid clock");
+        for _ in 0..80_946 {
+            filter.clock_pcm(-8_469);
+        }
+        let expected = filter.clone();
+        filter.clock_pcm(-8_469);
+        assert_eq!(filter, expected);
+
+        for _ in 0..1_000_000 {
+            filter.clock_pcm(-8_469);
+        }
+        assert_eq!(filter, expected);
     }
 }

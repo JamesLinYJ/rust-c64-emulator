@@ -77,6 +77,13 @@ pub struct VicTiming {
     pub sprite: VicSpriteTiming,
 }
 
+impl VicTiming {
+    pub(crate) const fn is_ntsc(&self) -> bool {
+        self.cycles_per_raster_line == NTSC_VIC_TIMING.cycles_per_raster_line
+            && self.raster_line_count == NTSC_VIC_TIMING.raster_line_count
+    }
+}
+
 pub const PAL_VIC_TIMING: VicTiming = VicTiming {
     bad_line: VicBadLineTiming {
         ba_first_cycle: 12,

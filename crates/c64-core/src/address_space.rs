@@ -252,7 +252,7 @@ impl C64AddressSpace {
         &mut self,
         address: u16,
         cartridge_lines: CartridgeLines,
-    ) {
+    ) -> Option<u8> {
         let value = if address == 0x0000 {
             Some(self.processor_port.direction_register())
         } else if address == 0x0001 {
@@ -275,6 +275,7 @@ impl C64AddressSpace {
         if let Some(value) = value {
             self.cpu_data_bus_latch = value;
         }
+        value
     }
 
     pub fn reset_processor_port(&mut self, lines: CartridgeLines) {
@@ -296,9 +297,18 @@ impl C64AddressSpace {
         C64CpuBus {
             address_space: self,
             devices,
-            write_source: MemoryWriteSource::Cpu,
-            processor_port_visible: true,
-            observe_cpu_writes: true,
+            mode: C64CpuBusMode::Cpu,
+        }
+    }
+
+    pub(crate) fn cpu_bus_after_passive_read<'a, D: C64BusDevices>(
+        &'a mut self,
+        devices: &'a mut D,
+    ) -> C64CpuBus<'a, D> {
+        C64CpuBus {
+            address_space: self,
+            devices,
+            mode: C64CpuBusMode::CpuAfterPassiveRead,
         }
     }
 
@@ -309,9 +319,7 @@ impl C64AddressSpace {
         C64CpuBus {
             address_space: self,
             devices,
-            write_source: MemoryWriteSource::Reu,
-            processor_port_visible: false,
-            observe_cpu_writes: false,
+            mode: C64CpuBusMode::Reu,
         }
     }
 
@@ -375,9 +383,39 @@ impl VicMemoryBus for C64VicMemoryBus<'_> {
 pub struct C64CpuBus<'a, D: C64BusDevices> {
     address_space: &'a mut C64AddressSpace,
     devices: &'a mut D,
-    write_source: MemoryWriteSource,
-    processor_port_visible: bool,
-    observe_cpu_writes: bool,
+    mode: C64CpuBusMode,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum C64CpuBusMode {
+    Cpu,
+    CpuAfterPassiveRead,
+    Reu,
+}
+
+impl C64CpuBusMode {
+    const fn processor_port_visible(self) -> bool {
+        !matches!(self, Self::Reu)
+    }
+
+    const fn processor_port_inputs_current(self) -> bool {
+        matches!(self, Self::CpuAfterPassiveRead)
+    }
+
+    const fn pla_inputs_current(self) -> bool {
+        matches!(self, Self::CpuAfterPassiveRead)
+    }
+
+    const fn write_source(self) -> MemoryWriteSource {
+        match self {
+            Self::Cpu | Self::CpuAfterPassiveRead => MemoryWriteSource::Cpu,
+            Self::Reu => MemoryWriteSource::Reu,
+        }
+    }
+
+    const fn observe_cpu_writes(self) -> bool {
+        !matches!(self, Self::Reu)
+    }
 }
 
 impl<D: C64BusDevices> C64CpuBus<'_, D> {
@@ -414,7 +452,7 @@ impl<D: C64BusDevices> C64CpuBus<'_, D> {
             | PlaTarget::CharacterRom => {
                 self.address_space
                     .memory
-                    .write_base_ram(address, value, self.write_source);
+                    .write_base_ram(address, value, self.mode.write_source());
             }
             PlaTarget::Io => self.write_io(address, value),
             PlaTarget::CartridgeLow => {
@@ -465,17 +503,21 @@ impl<D: C64BusDevices> C64CpuBus<'_, D> {
 
 impl<D: C64BusDevices> CpuBus for C64CpuBus<'_, D> {
     fn read(&mut self, address: u16) -> u8 {
-        self.address_space
-            .synchronize_processor_port_inputs(self.devices.processor_port_input_state());
-        let value = if !self.processor_port_visible && address <= 0x0001 {
+        if !self.mode.processor_port_inputs_current() {
+            self.address_space
+                .synchronize_processor_port_inputs(self.devices.processor_port_input_state());
+        }
+        let value = if !self.mode.processor_port_visible() && address <= 0x0001 {
             self.address_space.memory.read_base_ram(address)
         } else if address == 0x0000 {
             self.address_space.processor_port.direction_register()
         } else if address == 0x0001 {
             self.address_space.processor_port.data_register()
         } else {
-            self.address_space
-                .synchronize_pla(self.devices.cartridge_lines());
+            if !self.mode.pla_inputs_current() {
+                self.address_space
+                    .synchronize_pla(self.devices.cartridge_lines());
+            }
             self.read_pla_target(self.address_space.pla.read_target(address), address)
         };
         self.address_space.cpu_data_bus_latch = value;
@@ -484,10 +526,10 @@ impl<D: C64BusDevices> CpuBus for C64CpuBus<'_, D> {
 
     fn write(&mut self, address: u16, value: u8) {
         self.address_space.cpu_data_bus_latch = value;
-        if !self.processor_port_visible && address <= 0x0001 {
+        if !self.mode.processor_port_visible() && address <= 0x0001 {
             self.address_space
                 .memory
-                .write_base_ram(address, value, self.write_source);
+                .write_base_ram(address, value, self.mode.write_source());
         } else if address == 0x0000 || address == 0x0001 {
             let output_changed = if address == 0x0000 {
                 self.address_space.processor_port.write_direction(value)
@@ -496,7 +538,7 @@ impl<D: C64BusDevices> CpuBus for C64CpuBus<'_, D> {
             };
             self.address_space
                 .memory
-                .write_base_ram(address, value, self.write_source);
+                .write_base_ram(address, value, self.mode.write_source());
             self.address_space
                 .synchronize_pla(self.devices.cartridge_lines());
             if output_changed {
@@ -509,7 +551,7 @@ impl<D: C64BusDevices> CpuBus for C64CpuBus<'_, D> {
                 .synchronize_pla(self.devices.cartridge_lines());
             self.write_pla_target(self.address_space.pla.write_target(address), address, value);
         }
-        if self.observe_cpu_writes {
+        if self.mode.observe_cpu_writes() {
             self.devices.observe_cpu_write(address);
         }
     }
@@ -565,13 +607,61 @@ fn zeroed_bytes(size: usize) -> Box<[u8]> {
 
 #[cfg(test)]
 mod tests {
+    use core::cell::Cell;
+
     use crate::cpu::{Cpu6510, Cpu6510State, CpuBus};
     use crate::devices::vic::VicMemoryBus;
     use crate::memory::{PageDomain, PhysicalTarget};
+    use crate::processor_port::ProcessorPortInputState;
 
     use super::{
         C64AddressSpace, C64BusDevices, C64Firmware, CartridgeLines, DisconnectedBusDevices,
     };
+
+    #[derive(Default)]
+    struct CountingBoardInputs {
+        cartridge_line_samples: Cell<u32>,
+        processor_port_samples: Cell<u32>,
+    }
+
+    impl C64BusDevices for CountingBoardInputs {
+        fn cartridge_lines(&self) -> CartridgeLines {
+            self.cartridge_line_samples
+                .set(self.cartridge_line_samples.get() + 1);
+            CartridgeLines::DISCONNECTED
+        }
+
+        fn processor_port_input_state(&self) -> ProcessorPortInputState {
+            self.processor_port_samples
+                .set(self.processor_port_samples.get() + 1);
+            ProcessorPortInputState {
+                mask: 0x10,
+                value: 0,
+            }
+        }
+    }
+
+    #[test]
+    fn passive_read_bus_does_not_resample_synchronized_board_inputs() {
+        let mut address_space = C64AddressSpace::new(C64Firmware::blank_for_test());
+        address_space.synchronize_processor_port_inputs(ProcessorPortInputState {
+            mask: 0x10,
+            value: 0,
+        });
+        let mut devices = CountingBoardInputs::default();
+        assert_eq!(
+            address_space.drive_passive_cpu_read_data_bus(0xa000, devices.cartridge_lines()),
+            Some(0)
+        );
+
+        let value = address_space
+            .cpu_bus_after_passive_read(&mut devices)
+            .read(0xa000);
+
+        assert_eq!(value, 0);
+        assert_eq!(devices.cartridge_line_samples.get(), 1);
+        assert_eq!(devices.processor_port_samples.get(), 0);
+    }
 
     #[test]
     fn rom_reads_and_hidden_ram_writes_use_distinct_page_capabilities() {
@@ -691,11 +781,20 @@ mod tests {
             bus.write(0xd019, 0xa5);
         }
 
-        address_space.drive_passive_cpu_read_data_bus(0xd019, CartridgeLines::DISCONNECTED);
+        assert_eq!(
+            address_space.drive_passive_cpu_read_data_bus(0xd019, CartridgeLines::DISCONNECTED,),
+            None
+        );
         assert_eq!(address_space.cpu_data_bus_latch(), 0xa5);
-        address_space.drive_passive_cpu_read_data_bus(0xa000, CartridgeLines::DISCONNECTED);
+        assert_eq!(
+            address_space.drive_passive_cpu_read_data_bus(0xa000, CartridgeLines::DISCONNECTED,),
+            Some(0x42)
+        );
         assert_eq!(address_space.cpu_data_bus_latch(), 0x42);
-        address_space.drive_passive_cpu_read_data_bus(0x0001, CartridgeLines::DISCONNECTED);
+        assert_eq!(
+            address_space.drive_passive_cpu_read_data_bus(0x0001, CartridgeLines::DISCONNECTED,),
+            Some(address_space.processor_port().data_register())
+        );
         assert_eq!(
             address_space.cpu_data_bus_latch(),
             address_space.processor_port().data_register()

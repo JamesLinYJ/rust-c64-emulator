@@ -88,6 +88,12 @@ impl VirtualClock {
         true
     }
 
+    pub(crate) fn consume_strict_cpu_slot(&mut self) {
+        debug_assert_eq!(self.timestamp.slot, 0);
+        debug_assert_eq!(self.slots_per_system_cycle, SlotsPerSystemCycle::STRICT);
+        self.timestamp.system_cycle = self.timestamp.system_cycle.wrapping_add(1);
+    }
+
     /// Advance one external C64 system cycle while RDY keeps the current CPU
     /// micro-cycle pending. The internal Turbo slot is intentionally preserved.
     pub fn advance_external_wait_cycle(&mut self) {

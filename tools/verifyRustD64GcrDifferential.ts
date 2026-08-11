@@ -8,7 +8,7 @@
 //   作者:       OpenAI Codex
 // --------------------------------------------------------------------------
 
-import { spawnSync } from 'node:child_process';
+import { runRustJsonTraceSync } from './runRustJsonTrace';
 import { isDeepStrictEqual } from 'node:util';
 
 import {
@@ -138,19 +138,12 @@ function runTypeScript(input: DifferentialInput): DifferentialOutput {
 }
 
 function runRust(input: DifferentialInput): DifferentialOutput {
-  const result = spawnSync(
-    'cargo',
-    ['run', '--quiet', '--locked', '-p', 'c64-core', '--example', 'd64_gcr_trace'],
-    {
-      encoding: 'utf8',
-      input: JSON.stringify(input),
-      maxBuffer: 128 * 1024 * 1024,
-    },
-  );
-  if (result.status !== 0) {
-    throw new Error(`Rust D64 GCR adapter failed:\n${result.stderr || result.stdout}`);
-  }
-  return JSON.parse(result.stdout) as DifferentialOutput;
+  return runRustJsonTraceSync<DifferentialOutput>({
+    example: 'd64_gcr_trace',
+    input,
+    label: 'Rust D64 GCR adapter',
+    maximumOutputBytes: 128 * 1024 * 1024,
+  });
 }
 
 const input = buildInput();

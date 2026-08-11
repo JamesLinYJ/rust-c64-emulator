@@ -8,11 +8,11 @@
 //   作者:       OpenAI Codex
 // --------------------------------------------------------------------------
 
-import { execFileSync } from 'node:child_process';
 import { resolve } from 'node:path';
 
 import { SID_MODEL, type SidModel } from '../src/devices/SidModel';
 import { loadPinnedReferenceAsset } from './reference/loadPinnedReferenceAsset';
+import { runBoundedCommand } from './runRustJsonTrace';
 
 interface ReferenceAsset {
   readonly cacheFileName: string;
@@ -106,11 +106,21 @@ async function main(): Promise<void> {
     programs.set(program, path);
   }
 
-  execFileSync(
-    'cargo',
-    ['build', '--quiet', '--release', '--locked', '-p', 'c64-core', '--example', 'vice_sid'],
-    { stdio: 'inherit' },
-  );
+  await runBoundedCommand({
+    arguments: [
+      'build',
+      '--quiet',
+      '--release',
+      '--locked',
+      '-p',
+      'c64-core',
+      '--example',
+      'vice_sid',
+    ],
+    command: 'cargo',
+    label: 'Rust VICE SID runner build',
+    maximumOutputBytes: 4 * 1024 * 1024,
+  });
   const executable = resolve(
     `target/release/examples/vice_sid${process.platform === 'win32' ? '.exe' : ''}`,
   );
@@ -120,11 +130,13 @@ async function main(): Promise<void> {
     const programPath = programs.get(test.program);
     if (programPath === undefined)
       throw new Error(`Missing pinned program ${test.program.fileName}.`);
-    const stdout = execFileSync(
-      executable,
-      [...FIRMWARE_PATHS, programPath, test.model, String(test.expected.length)],
-      { encoding: 'utf8', maxBuffer: 4 * 1024 * 1024, timeout: 120_000 },
-    );
+    const stdout = await runBoundedCommand({
+      arguments: [...FIRMWARE_PATHS, programPath, test.model, String(test.expected.length)],
+      command: executable,
+      label: `Rust VICE SID ${test.label}/${test.model}`,
+      maximumOutputBytes: 4 * 1024 * 1024,
+      timeoutMilliseconds: 120_000,
+    });
     const report = parseReport(stdout);
     if (report.exit_code !== 0 || !isExact(report.memory, test.expected)) {
       throw new Error(

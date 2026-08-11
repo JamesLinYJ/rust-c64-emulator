@@ -139,6 +139,9 @@ impl CpuIrqLine {
     }
 
     pub fn update(&mut self, asserted: bool, cycle: u64) {
+        if !asserted && !self.asserted && self.pending_until_cycle.is_none() {
+            return;
+        }
         if asserted && !self.asserted {
             self.asserted = true;
             self.asserted_at_cycle = Some(cycle);
@@ -211,6 +214,9 @@ impl CpuNmiLine {
     }
 
     pub fn update(&mut self, asserted: bool, cycle: u64) {
+        if asserted == self.asserted {
+            return;
+        }
         if asserted && !self.asserted && !self.edge_pending {
             self.edge_at_cycle = Some(cycle);
             self.edge_pending = true;

@@ -102,7 +102,11 @@ impl VicBadLineController {
         self.timing
     }
 
-    pub const fn active(self) -> bool {
+    pub(super) const fn timing_ref(&self) -> &VicTiming {
+        &self.timing
+    }
+
+    pub const fn active(&self) -> bool {
         self.state_flag(CONTROLLER_BAD_LINE_ACTIVE)
     }
 
@@ -124,6 +128,13 @@ impl VicBadLineController {
         }
 
         let condition = self.is_bad_line_condition(signals.raster_line, signals.vertical_scroll);
+        if !condition
+            && !self.state_flag(CONTROLLER_CONDITION_WAS_ACTIVE)
+            && !self.active()
+            && self.dma_start_cycle.is_none()
+        {
+            return VicBadLineCycle::default();
+        }
         let condition_started = condition && !self.state_flag(CONTROLLER_CONDITION_WAS_ACTIVE);
         let condition_ended = !condition && self.state_flag(CONTROLLER_CONDITION_WAS_ACTIVE);
         let mut enter_display_state = false;
@@ -176,7 +187,7 @@ impl VicBadLineController {
         }
     }
 
-    const fn bus_acquisition_cycle_count(self) -> u8 {
+    const fn bus_acquisition_cycle_count(&self) -> u8 {
         self.timing.fetch.matrix_first_cycle - self.timing.bad_line.ba_first_cycle
     }
 
@@ -187,7 +198,7 @@ impl VicBadLineController {
         self.dma_start_cycle = None;
     }
 
-    const fn is_bad_line_condition(self, raster_line: u16, vertical_scroll: u8) -> bool {
+    const fn is_bad_line_condition(&self, raster_line: u16, vertical_scroll: u8) -> bool {
         self.state_flag(CONTROLLER_ALLOW_BAD_LINES)
             && raster_line >= self.timing.bad_line.first_raster_line
             && raster_line <= self.timing.bad_line.last_raster_line
@@ -216,7 +227,7 @@ impl VicBadLineController {
         })
     }
 
-    fn matrix_column_for_cycle(self, cycle: u8) -> u8 {
+    fn matrix_column_for_cycle(&self, cycle: u8) -> u8 {
         let last_column =
             self.timing.fetch.matrix_last_cycle - self.timing.fetch.matrix_first_cycle;
         cycle
@@ -224,7 +235,7 @@ impl VicBadLineController {
             .min(last_column)
     }
 
-    const fn state_flag(self, flag: u8) -> bool {
+    const fn state_flag(&self, flag: u8) -> bool {
         self.state_flags & flag != 0
     }
 
@@ -244,6 +255,23 @@ fn set_flag(flags: &mut u8, flag: u8, enabled: bool) {
 #[cfg(test)]
 mod tests {
     use super::{VicBadLineController, VicBadLineSignals, VicMatrixAccessSource};
+
+    #[test]
+    fn inactive_mid_line_cycle_is_an_exact_noop() {
+        let mut controller = VicBadLineController::default();
+        let initial = controller;
+        let result = controller.tick(VicBadLineSignals {
+            cycle: 30,
+            display_enabled: false,
+            frame_started: false,
+            line_started: false,
+            raster_line: 20,
+            vertical_scroll: 0,
+        });
+
+        assert_eq!(result, super::VicBadLineCycle::default());
+        assert_eq!(controller, initial);
+    }
 
     #[test]
     fn normal_bad_line_requests_ba_three_cycles_before_video_memory() {

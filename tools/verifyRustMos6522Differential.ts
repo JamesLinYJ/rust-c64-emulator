@@ -8,7 +8,6 @@
 //   作者:       OpenAI Codex
 // --------------------------------------------------------------------------
 
-import { spawnSync } from 'node:child_process';
 import { isDeepStrictEqual } from 'node:util';
 
 import { Mos6522 } from '../src/devices/Mos6522';
@@ -20,6 +19,7 @@ import {
   MOS_6522_SHIFT_MODE,
   type Mos6522ControlLine,
 } from '../src/devices/Mos6522Registers';
+import { runRustJsonTraceSync } from './runRustJsonTrace';
 
 type Operation =
   | { readonly cycles: number; readonly kind: 'clock' }
@@ -181,21 +181,12 @@ function runTypeScript(operations: readonly Operation[]): readonly Observation[]
 }
 
 function runRust(operations: readonly Operation[]): readonly Observation[] {
-  const result = spawnSync(
-    'cargo',
-    ['run', '--quiet', '--locked', '-p', 'c64-core', '--example', 'via_trace'],
-    {
-      cwd: process.cwd(),
-      encoding: 'utf8',
-      input: JSON.stringify(operations),
-      maxBuffer: 96 * 1024 * 1024,
-    },
-  );
-  if (result.error) throw result.error;
-  if (result.status !== 0) {
-    throw new Error(`Rust MOS 6522 adapter failed (${String(result.status)}):\n${result.stderr}`);
-  }
-  return JSON.parse(result.stdout) as readonly Observation[];
+  return runRustJsonTraceSync<readonly Observation[]>({
+    example: 'via_trace',
+    input: operations,
+    label: 'Rust MOS 6522 adapter',
+    maximumOutputBytes: 96 * 1024 * 1024,
+  });
 }
 
 const operations = buildOperations();

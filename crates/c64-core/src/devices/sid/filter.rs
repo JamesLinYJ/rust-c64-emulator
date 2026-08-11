@@ -100,6 +100,13 @@ impl SidFilter {
         }
     }
 
+    pub(crate) fn zero_input_is_stationary(&self) -> bool {
+        match &self.backend {
+            SidFilterBackend::Mos6581(filter) => filter.default_zero_input_is_stationary(),
+            SidFilterBackend::Mos8580(filter) => filter.zero_input_is_stationary(),
+        }
+    }
+
     pub fn reset(&mut self) {
         match &mut self.backend {
             SidFilterBackend::Mos6581(filter) => filter.reset(),
@@ -182,6 +189,13 @@ impl SidMos8580Filter {
 
     pub const fn output_pcm(&self) -> i16 {
         self.output_pcm_state
+    }
+
+    const fn zero_input_is_stationary(&self) -> bool {
+        self.low_pass_state == 0
+            && self.band_pass_state == 0
+            && self.high_pass_state == 0
+            && self.output_pcm_state == 0
     }
 
     pub fn reset(&mut self) {

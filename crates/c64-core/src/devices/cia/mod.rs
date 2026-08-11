@@ -14,7 +14,7 @@ mod serial;
 mod timer;
 
 use serial::Mos6526SerialPort;
-use timer::{Mos6526Timer, TimerInputMode};
+use timer::{Mos6526Timer, QuietTimerAction, TimerInputMode};
 
 pub const REGISTER_COUNT: usize = 0x10;
 
@@ -107,6 +107,35 @@ pub struct Mos6526Timing {
     pub time_of_day_input_hz: u32,
 }
 
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, wincode::SchemaRead, wincode::SchemaWrite)]
+enum ProcessorClockMode {
+    #[default]
+    Unknown,
+    Idle,
+    DecrementTimerA,
+    DecrementTimerB,
+    DecrementBothTimers,
+}
+
+impl ProcessorClockMode {
+    const fn from_actions(
+        timer_a: QuietTimerAction,
+        timer_b: QuietTimerAction,
+        primary_remains_quiet: bool,
+        secondary_remains_quiet: bool,
+    ) -> Self {
+        if !primary_remains_quiet || !secondary_remains_quiet {
+            return Self::Unknown;
+        }
+        match (timer_a, timer_b) {
+            (QuietTimerAction::None, QuietTimerAction::None) => Self::Idle,
+            (QuietTimerAction::Decrement, QuietTimerAction::None) => Self::DecrementTimerA,
+            (QuietTimerAction::None, QuietTimerAction::Decrement) => Self::DecrementTimerB,
+            (QuietTimerAction::Decrement, QuietTimerAction::Decrement) => Self::DecrementBothTimers,
+        }
+    }
+}
+
 impl Default for Mos6526Timing {
     fn default() -> Self {
         Self::PAL
@@ -159,9 +188,11 @@ pub struct Mos6526 {
     elapsed_cycle_count: u64,
     last_interrupt_control_read_cycle: Option<u64>,
     serial_port: Mos6526SerialPort,
+    deferred_time_of_day_processor_cycles: u32,
     time_of_day_phase_accumulator: u64,
     time_of_day_divider_phase: u8,
     port_control_pulse_cycles_remaining: u8,
+    processor_clock_mode: ProcessorClockMode,
     state_flags: u8,
     model: Mos6526Model,
     timing: Mos6526Timing,
@@ -203,9 +234,11 @@ impl Mos6526 {
             elapsed_cycle_count: 0,
             last_interrupt_control_read_cycle: None,
             serial_port: Mos6526SerialPort::new(),
+            deferred_time_of_day_processor_cycles: 0,
             time_of_day_phase_accumulator: 0,
             time_of_day_divider_phase: 0,
             port_control_pulse_cycles_remaining: 0,
+            processor_clock_mode: ProcessorClockMode::Unknown,
             state_flags: STATE_TIME_OF_DAY_STOPPED
                 | STATE_COUNT_PIN_HIGH
                 | STATE_FLAG_PIN_HIGH
@@ -217,6 +250,33 @@ impl Mos6526 {
 
     pub const fn model(&self) -> Mos6526Model {
         self.model
+    }
+
+    pub(crate) fn state_matches_timing(&self, timing: Mos6526Timing) -> bool {
+        if self.timing != timing
+            || !self.state_flag(STATE_TIME_OF_DAY_STOPPED)
+                && self.deferred_time_of_day_processor_cycles != 0
+        {
+            return false;
+        }
+        if self.processor_clock_mode == ProcessorClockMode::Unknown {
+            return true;
+        }
+        if self.port_control_pulse_cycles_remaining != 0
+            || self.serial_port.cycle_work_pending()
+            || self.interrupt_pipeline != 0
+            || self.new_interrupt_flags != 0
+        {
+            return false;
+        }
+        let Some(primary_action) = self.timer_a.quiet_processor_clock_action() else {
+            return false;
+        };
+        let Some(secondary_action) = self.timer_b.quiet_processor_clock_action() else {
+            return false;
+        };
+        self.processor_clock_mode
+            == ProcessorClockMode::from_actions(primary_action, secondary_action, true, true)
     }
 
     pub const fn interrupt_pending(&self) -> bool {
@@ -284,9 +344,11 @@ impl Mos6526 {
         self.elapsed_cycle_count = 0;
         self.last_interrupt_control_read_cycle = None;
         self.serial_port.reset();
+        self.deferred_time_of_day_processor_cycles = 0;
         self.time_of_day_phase_accumulator = 0;
         self.time_of_day_divider_phase = 0;
         self.port_control_pulse_cycles_remaining = 0;
+        self.processor_clock_mode = ProcessorClockMode::Unknown;
         self.state_flags = STATE_TIME_OF_DAY_STOPPED
             | STATE_COUNT_PIN_HIGH
             | STATE_PORT_CONTROL_OUTPUT_HIGH
@@ -295,6 +357,7 @@ impl Mos6526 {
 
     /// Read one of the sixteen mirrored registers with board-provided port inputs.
     pub fn read(&mut self, address: u16, external_port_a: u8, external_port_b: u8) -> u8 {
+        self.processor_clock_mode = ProcessorClockMode::Unknown;
         let index = address.to_le_bytes()[0] & 0x0f;
         match index {
             register::PORT_A => self.port_a_output_pins() & external_port_a,
@@ -322,6 +385,8 @@ impl Mos6526 {
 
     /// Write one of the sixteen mirrored registers.
     pub fn write(&mut self, address: u16, value: u8) {
+        self.processor_clock_mode = ProcessorClockMode::Unknown;
+        self.flush_deferred_time_of_day_processor_cycles();
         let index = address.to_le_bytes()[0] & 0x0f;
         match index {
             register::PORT_A | register::DATA_DIRECTION_A | register::DATA_DIRECTION_B => {
@@ -358,17 +423,18 @@ impl Mos6526 {
         for _ in 0..cycles {
             self.run_processor_clock_cycle();
         }
-        self.tick_time_of_day_from_processor_cycles(cycles);
+        self.clock_time_of_day_from_processor_cycles(cycles);
         self.interrupt_pending()
     }
 
     pub fn clock_cycle(&mut self) -> bool {
         self.run_processor_clock_cycle();
-        self.tick_time_of_day_from_processor_cycles(1);
+        self.clock_time_of_day_from_processor_cycle();
         self.interrupt_pending()
     }
 
     pub fn pulse_count(&mut self, pulses: u64) -> bool {
+        self.processor_clock_mode = ProcessorClockMode::Unknown;
         for _ in 0..pulses {
             if self.serial_port.tick_cycle() {
                 self.raise_interrupt(interrupt::SERIAL);
@@ -396,10 +462,12 @@ impl Mos6526 {
     }
 
     pub fn set_count_pin_high(&mut self, high: bool) {
+        self.processor_clock_mode = ProcessorClockMode::Unknown;
         self.set_state_flag(STATE_COUNT_PIN_HIGH, high);
     }
 
     pub fn set_flag_pin_high(&mut self, high: bool) {
+        self.processor_clock_mode = ProcessorClockMode::Unknown;
         if self.state_flag(STATE_FLAG_PIN_HIGH) && !high {
             self.raise_interrupt(interrupt::FLAG);
         }
@@ -412,6 +480,7 @@ impl Mos6526 {
     }
 
     pub fn pulse_serial_clock(&mut self, input_bit: bool) {
+        self.processor_clock_mode = ProcessorClockMode::Unknown;
         if self.registers[register::TIMER_A_CONTROL as usize] & control::SERIAL_OUTPUT_MODE != 0 {
             return;
         }
@@ -557,6 +626,7 @@ impl Mos6526 {
     }
 
     fn raise_interrupt(&mut self, source: u8) {
+        self.processor_clock_mode = ProcessorClockMode::Unknown;
         let source = source & interrupt::SOURCE_MASK;
         self.interrupt_flags |= source;
         self.new_interrupt_flags |= source;
@@ -598,6 +668,69 @@ impl Mos6526 {
 
     fn run_processor_clock_cycle(&mut self) {
         self.elapsed_cycle_count = self.elapsed_cycle_count.wrapping_add(1);
+        if self.run_cached_processor_clock_cycle() {
+            return;
+        }
+        if self.run_quiet_processor_clock_cycle() {
+            return;
+        }
+        self.processor_clock_mode = ProcessorClockMode::Unknown;
+        self.run_active_processor_clock_cycle();
+    }
+
+    fn run_cached_processor_clock_cycle(&mut self) -> bool {
+        let mode = self.processor_clock_mode;
+        let remains_quiet = match mode {
+            ProcessorClockMode::Unknown => return false,
+            ProcessorClockMode::Idle => true,
+            ProcessorClockMode::DecrementTimerA => {
+                self.timer_a.apply_cached_processor_clock_decrement()
+            }
+            ProcessorClockMode::DecrementTimerB => {
+                self.timer_b.apply_cached_processor_clock_decrement()
+            }
+            ProcessorClockMode::DecrementBothTimers => {
+                let timer_a = self.timer_a.apply_cached_processor_clock_decrement();
+                let timer_b = self.timer_b.apply_cached_processor_clock_decrement();
+                timer_a && timer_b
+            }
+        };
+        if !remains_quiet {
+            self.processor_clock_mode = ProcessorClockMode::Unknown;
+        }
+        true
+    }
+
+    fn run_quiet_processor_clock_cycle(&mut self) -> bool {
+        if self.port_control_pulse_cycles_remaining != 0
+            || self.serial_port.cycle_work_pending()
+            || self.interrupt_pipeline != 0
+            || self.new_interrupt_flags != 0
+        {
+            return false;
+        }
+        let Some(primary_action) = self.timer_a.quiet_processor_clock_action() else {
+            return false;
+        };
+        let Some(secondary_action) = self.timer_b.quiet_processor_clock_action() else {
+            return false;
+        };
+        let primary_remains_quiet = self
+            .timer_a
+            .apply_quiet_processor_clock_action(primary_action);
+        let secondary_remains_quiet = self
+            .timer_b
+            .apply_quiet_processor_clock_action(secondary_action);
+        self.processor_clock_mode = ProcessorClockMode::from_actions(
+            primary_action,
+            secondary_action,
+            primary_remains_quiet,
+            secondary_remains_quiet,
+        );
+        true
+    }
+
+    fn run_active_processor_clock_cycle(&mut self) {
         self.tick_port_control_output();
         if self.serial_port.cycle_work_pending() && self.serial_port.tick_cycle() {
             self.raise_interrupt(interrupt::SERIAL);
@@ -634,14 +767,62 @@ impl Mos6526 {
         }
     }
 
+    fn clock_time_of_day_from_processor_cycles(&mut self, cycles: u64) {
+        if self.state_flag(STATE_TIME_OF_DAY_STOPPED) {
+            let available = u64::from(u32::MAX - self.deferred_time_of_day_processor_cycles);
+            if cycles <= available {
+                let deferred = u32::try_from(cycles)
+                    .expect("available stopped TOD processor cycles must fit u32");
+                self.deferred_time_of_day_processor_cycles += deferred;
+                return;
+            }
+        }
+        self.flush_deferred_time_of_day_processor_cycles();
+        self.tick_time_of_day_from_processor_cycles(cycles);
+    }
+
+    fn clock_time_of_day_from_processor_cycle(&mut self) {
+        if self.state_flag(STATE_TIME_OF_DAY_STOPPED)
+            && self.deferred_time_of_day_processor_cycles != u32::MAX
+        {
+            self.deferred_time_of_day_processor_cycles += 1;
+            return;
+        }
+        self.flush_deferred_time_of_day_processor_cycles();
+        self.tick_time_of_day_from_processor_cycle();
+    }
+
+    fn flush_deferred_time_of_day_processor_cycles(&mut self) {
+        let cycles = core::mem::take(&mut self.deferred_time_of_day_processor_cycles);
+        if cycles != 0 {
+            self.tick_time_of_day_from_processor_cycles(u64::from(cycles));
+        }
+    }
+
     fn tick_time_of_day_from_processor_cycles(&mut self, cycles: u64) {
-        let accumulated = u128::from(self.time_of_day_phase_accumulator)
-            + u128::from(cycles) * u128::from(self.timing.time_of_day_input_hz);
-        let denominator = u128::from(self.timing.processor_clock_hz);
-        let pulses = accumulated / denominator;
-        self.time_of_day_phase_accumulator = u64::try_from(accumulated % denominator)
-            .expect("TOD phase remainder is bounded by a 32-bit clock frequency");
-        self.tick_time_of_day_input(u64::try_from(pulses).unwrap_or(u64::MAX));
+        let denominator = u64::from(self.timing.processor_clock_hz);
+        let input_hz = u64::from(self.timing.time_of_day_input_hz);
+        let whole_seconds = cycles / denominator;
+        let remaining_cycles = cycles % denominator;
+        let partial = self.time_of_day_phase_accumulator + remaining_cycles * input_hz;
+        self.time_of_day_phase_accumulator = partial % denominator;
+        let pulses = whole_seconds
+            .saturating_mul(input_hz)
+            .saturating_add(partial / denominator);
+        self.tick_time_of_day_input(pulses);
+    }
+
+    fn tick_time_of_day_from_processor_cycle(&mut self) {
+        let denominator = u64::from(self.timing.processor_clock_hz);
+        let accumulated =
+            self.time_of_day_phase_accumulator + u64::from(self.timing.time_of_day_input_hz);
+        if accumulated < denominator {
+            self.time_of_day_phase_accumulator = accumulated;
+            return;
+        }
+
+        self.time_of_day_phase_accumulator = accumulated % denominator;
+        self.tick_time_of_day_input(accumulated / denominator);
     }
 
     fn read_time_of_day(&mut self, register_index: u8) -> u8 {
@@ -766,7 +947,9 @@ const fn normalize_time_of_day_value(register_index: u8, value: u8) -> u8 {
 
 #[cfg(test)]
 mod tests {
-    use super::{Mos6526, Mos6526Model, Mos6526Timing, control, interrupt, register};
+    use super::{
+        Mos6526, Mos6526Model, Mos6526Timing, ProcessorClockMode, control, interrupt, register,
+    };
 
     fn write_timer_a(cia: &mut Mos6526, value: u16) {
         let [low, high] = value.to_le_bytes();
@@ -778,6 +961,50 @@ mod tests {
         let [low, high] = value.to_le_bytes();
         cia.write(u16::from(register::TIMER_B_LOW), low);
         cia.write(u16::from(register::TIMER_B_HIGH), high);
+    }
+
+    fn assert_cached_processor_cycles_match_recomputed_cycles(mut cached: Mos6526) {
+        let mut recomputed = cached.clone();
+        for cycle in 0..5_000 {
+            cached.clock_cycle();
+            recomputed.processor_clock_mode = ProcessorClockMode::Unknown;
+            recomputed.clock_cycle();
+            assert_eq!(cached, recomputed, "cycle={cycle}");
+        }
+    }
+
+    #[test]
+    fn cached_quiet_processor_modes_are_cycle_exact() {
+        assert_cached_processor_cycles_match_recomputed_cycles(Mos6526::default());
+
+        let mut running = Mos6526::default();
+        write_timer_a(&mut running, 7);
+        write_timer_b(&mut running, 11);
+        running.write(
+            u16::from(register::TIMER_A_CONTROL),
+            control::START | control::FORCE_LOAD,
+        );
+        running.write(
+            u16::from(register::TIMER_B_CONTROL),
+            control::START | control::FORCE_LOAD,
+        );
+        assert_cached_processor_cycles_match_recomputed_cycles(running);
+    }
+
+    #[test]
+    fn state_validation_rejects_inconsistent_derived_clock_state() {
+        let mut cia = Mos6526::default();
+        assert!(cia.state_matches_timing(Mos6526Timing::PAL));
+        cia.clock_cycle();
+        assert!(cia.state_matches_timing(Mos6526Timing::PAL));
+
+        cia.processor_clock_mode = ProcessorClockMode::DecrementTimerA;
+        assert!(!cia.state_matches_timing(Mos6526Timing::PAL));
+
+        cia.processor_clock_mode = ProcessorClockMode::Unknown;
+        cia.write(u16::from(register::TIME_OF_DAY_TENTHS), 0);
+        cia.deferred_time_of_day_processor_cycles = 1;
+        assert!(!cia.state_matches_timing(Mos6526Timing::PAL));
     }
 
     #[test]
@@ -886,6 +1113,45 @@ mod tests {
             cia.read_pulled_up(u16::from(register::TIME_OF_DAY_TENTHS)),
             0
         );
+    }
+
+    #[test]
+    fn batched_and_single_cycle_tod_phase_are_identical() {
+        for timing in [
+            Mos6526Timing::PAL,
+            Mos6526Timing::NTSC,
+            Mos6526Timing {
+                processor_clock_hz: 13,
+                time_of_day_input_hz: 5,
+            },
+            Mos6526Timing {
+                processor_clock_hz: 3,
+                time_of_day_input_hz: 8,
+            },
+        ] {
+            let mut batched = Mos6526::new(Mos6526Model::Original, timing).unwrap();
+            let mut stepped = batched.clone();
+            for cycles in [0, 1, 2, 3, 7, 31, 257, 4_096] {
+                batched.tick(cycles);
+                for _ in 0..cycles {
+                    stepped.clock_cycle();
+                }
+                assert_eq!(batched, stepped, "timing={timing:?}, cycles={cycles}");
+            }
+        }
+    }
+
+    #[test]
+    fn stopped_tod_phase_is_flushed_before_a_register_write() {
+        let mut deferred = Mos6526::default();
+        deferred.tick(4_096);
+        let mut explicitly_flushed = deferred.clone();
+        explicitly_flushed.flush_deferred_time_of_day_processor_cycles();
+
+        deferred.write(u16::from(register::PORT_A), 0x5a);
+        explicitly_flushed.write(u16::from(register::PORT_A), 0x5a);
+
+        assert_eq!(deferred, explicitly_flushed);
     }
 
     #[test]

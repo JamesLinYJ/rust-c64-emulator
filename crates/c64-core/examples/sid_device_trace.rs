@@ -9,10 +9,13 @@
 // --------------------------------------------------------------------------
 
 use std::error::Error;
-use std::io::{self, Read};
+use std::io;
 
 use c64_core::{Sid, SidModel, SidVoiceState};
 use serde::{Deserialize, Serialize};
+
+#[path = "support/json_line.rs"]
+mod json_line;
 
 #[derive(Clone, Copy, Deserialize)]
 enum Model {
@@ -145,9 +148,7 @@ fn run_scenario(scenario: Scenario) -> Result<Vec<Observation>, io::Error> {
 }
 
 fn main() -> Result<(), Box<dyn Error>> {
-    let mut input = String::new();
-    io::stdin().read_to_string(&mut input)?;
-    let scenarios: Vec<Scenario> = serde_json::from_str(&input)?;
+    let scenarios: Vec<Scenario> = json_line::read_stdin_json_line()?;
     let output = scenarios
         .into_iter()
         .map(run_scenario)

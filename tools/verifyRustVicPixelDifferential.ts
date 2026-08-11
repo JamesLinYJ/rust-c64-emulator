@@ -8,8 +8,6 @@
 //   作者:       OpenAI Codex
 // --------------------------------------------------------------------------
 
-import { spawnSync } from 'node:child_process';
-
 import { C64_PALETTE } from '../src/devices/VicII';
 import { VicCycleSequencer } from '../src/devices/VicCycleSequencer';
 import {
@@ -19,6 +17,7 @@ import {
   type VicPixelRegisters,
 } from '../src/devices/VicPixelPipeline';
 import { VicSprite } from '../src/devices/VicSprite';
+import { runRustJsonTrace } from './runRustJsonTrace';
 
 interface TickOperation {
   readonly kind: 'tick';
@@ -220,27 +219,18 @@ function runTypeScript(operations: readonly Operation[]): readonly Observation[]
   });
 }
 
-function runRust(operations: readonly Operation[]): readonly Observation[] {
-  const result = spawnSync(
-    'cargo',
-    ['run', '--quiet', '--locked', '-p', 'c64-core', '--example', 'vic_pixel_trace'],
-    {
-      cwd: process.cwd(),
-      encoding: 'utf8',
-      input: JSON.stringify(operations),
-      maxBuffer: 64 * 1024 * 1024,
-    },
-  );
-  if (result.error) throw result.error;
-  if (result.status !== 0) {
-    throw new Error(`Rust VIC pixel adapter failed (${String(result.status)}):\n${result.stderr}`);
-  }
-  return JSON.parse(result.stdout) as readonly Observation[];
+async function runRust(operations: readonly Operation[]): Promise<readonly Observation[]> {
+  return runRustJsonTrace<readonly Observation[]>({
+    example: 'vic_pixel_trace',
+    input: operations,
+    label: 'Rust VIC pixel adapter',
+    maximumOutputBytes: 64 * 1024 * 1024,
+  });
 }
 
 const operations = buildOperations();
 const expected = runTypeScript(operations);
-const actual = runRust(operations);
+const actual = await runRust(operations);
 if (actual.length !== expected.length) throw new Error('Rust VIC pixel trace length mismatch.');
 for (let index = 0; index < expected.length; index += 1) {
   if (JSON.stringify(actual[index]) !== JSON.stringify(expected[index])) {

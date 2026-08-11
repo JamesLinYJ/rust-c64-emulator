@@ -89,7 +89,7 @@ pub fn vic_bus_schedule_for_timing(
         });
     }
     let index = usize::from(cycle - 1);
-    if timing == NTSC_VIC_TIMING {
+    if timing.is_ntsc() {
         Ok(NTSC_BUS_SCHEDULE[index])
     } else {
         Ok(PAL_BUS_SCHEDULE[index])

@@ -8,13 +8,13 @@
 //   作者:       OpenAI Codex
 // --------------------------------------------------------------------------
 
-import { execFileSync } from 'node:child_process';
 import { mkdir, readFile } from 'node:fs/promises';
 import { resolve } from 'node:path';
 
 import { PNG } from 'pngjs';
 
 import { loadPinnedReferenceAsset } from './reference/loadPinnedReferenceAsset';
+import { runBoundedCommand } from './runRustJsonTrace';
 
 interface ReferenceAsset {
   readonly cacheFileName?: string;
@@ -199,17 +199,23 @@ function parseReport(stdout: string): RustRunReport {
   };
 }
 
-function runRustReference(
+async function runRustReference(
   executable: string,
   programPath: string,
   entryPoint: number,
   framePath: string,
-): RustRunReport {
-  const stdout = execFileSync(
-    executable,
-    [...FIRMWARE_PATHS, programPath, entryPoint.toString(16).padStart(4, '0'), framePath],
-    { encoding: 'utf8', maxBuffer: 4 * 1024 * 1024 },
-  );
+): Promise<RustRunReport> {
+  const stdout = await runBoundedCommand({
+    arguments: [
+      ...FIRMWARE_PATHS,
+      programPath,
+      entryPoint.toString(16).padStart(4, '0'),
+      framePath,
+    ],
+    command: executable,
+    label: `Rust VICE VIC reference ${programPath}`,
+    maximumOutputBytes: 4 * 1024 * 1024,
+  });
   return parseReport(stdout);
 }
 
@@ -282,17 +288,27 @@ function comparePaletteIndices(
 
 async function main(): Promise<void> {
   await mkdir(FRAME_DIRECTORY, { recursive: true });
-  execFileSync(
-    'cargo',
-    ['build', '--quiet', '--release', '--locked', '-p', 'c64-core', '--example', 'vice_vic'],
-    { stdio: 'inherit' },
-  );
+  await runBoundedCommand({
+    arguments: [
+      'build',
+      '--quiet',
+      '--release',
+      '--locked',
+      '-p',
+      'c64-core',
+      '--example',
+      'vice_vic',
+    ],
+    command: 'cargo',
+    label: 'Rust VICE VIC runner build',
+    maximumOutputBytes: 4 * 1024 * 1024,
+  });
   const executable = resolve(
     `target/release/examples/vice_vic${process.platform === 'win32' ? '.exe' : ''}`,
   );
 
   const rasterProgramPath = await ensureAsset(RASTER_IRQ_PROGRAM);
-  const rasterReport = runRustReference(
+  const rasterReport = await runRustReference(
     executable,
     rasterProgramPath,
     0x0815,
@@ -305,7 +321,7 @@ async function main(): Promise<void> {
   );
 
   const lightPenProgramPath = await ensureAsset(LIGHT_PEN_TIMING_PROGRAM);
-  const lightPenReport = runRustReference(
+  const lightPenReport = await runRustReference(
     executable,
     lightPenProgramPath,
     0x080d,
@@ -326,7 +342,12 @@ async function main(): Promise<void> {
       url: definition.referenceImage.url,
     });
     const framePath = resolve(FRAME_DIRECTORY, `pixel-${index}.frame`);
-    const report = runRustReference(executable, programPath, definition.entryPoint, framePath);
+    const report = await runRustReference(
+      executable,
+      programPath,
+      definition.entryPoint,
+      framePath,
+    );
     const label = `Rust VICE ${definition.program.fileName}`;
     assertPassed(label, report);
     const comparedPixels = comparePaletteIndices(

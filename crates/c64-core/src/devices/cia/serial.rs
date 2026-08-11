@@ -183,6 +183,18 @@ impl Mos6526SerialPort {
 mod tests {
     use super::Mos6526SerialPort;
 
+    #[test]
+    fn idle_processor_cycle_is_an_exact_noop() {
+        let mut serial = Mos6526SerialPort::new();
+        let initial = serial;
+
+        for _ in 0..1_000 {
+            assert!(!serial.tick_cycle());
+        }
+
+        assert_eq!(serial, initial);
+    }
+
     fn load_output_register(serial: &mut Mos6526SerialPort, value: u8) {
         serial.write_output_byte(value);
         assert!(!serial.output_active());

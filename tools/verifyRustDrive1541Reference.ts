@@ -8,10 +8,10 @@
 //   Author:     OpenAI Codex
 // --------------------------------------------------------------------------
 
-import { execFileSync } from 'node:child_process';
 import { resolve } from 'node:path';
 
 import { loadPinnedReferenceAsset } from './reference/loadPinnedReferenceAsset';
+import { runBoundedCommand } from './runRustJsonTrace';
 
 interface RustDirectoryReport {
   readonly boot_frames: number;
@@ -209,14 +209,16 @@ function requireFormatReport(stdout: string): RustFormatReport {
   };
 }
 
-function runScenario(
+async function runScenario(
   executable: string,
   scenario: string,
   diskPath = FRAMEWORK_DISK.cachePath,
-): string {
-  return execFileSync(executable, [...FIRMWARE_PATHS, DRIVE_ROM.cachePath, diskPath, scenario], {
-    encoding: 'utf8',
-    maxBuffer: 4 * 1024 * 1024,
+): Promise<string> {
+  return runBoundedCommand({
+    arguments: [...FIRMWARE_PATHS, DRIVE_ROM.cachePath, diskPath, scenario],
+    command: executable,
+    label: `Rust VICE drive ${scenario} scenario`,
+    maximumOutputBytes: 4 * 1024 * 1024,
   });
 }
 
@@ -226,15 +228,25 @@ async function main(): Promise<void> {
     loadPinnedReferenceAsset(FRAMEWORK_DISK),
     loadPinnedReferenceAsset(FORMAT_DISK),
   ]);
-  execFileSync(
-    'cargo',
-    ['build', '--quiet', '--release', '--locked', '-p', 'c64-core', '--example', 'vice_drive'],
-    { stdio: 'inherit' },
-  );
+  await runBoundedCommand({
+    arguments: [
+      'build',
+      '--quiet',
+      '--release',
+      '--locked',
+      '-p',
+      'c64-core',
+      '--example',
+      'vice_drive',
+    ],
+    command: 'cargo',
+    label: 'Rust VICE drive runner build',
+    maximumOutputBytes: 4 * 1024 * 1024,
+  });
   const executable = resolve(
     `target/release/examples/vice_drive${process.platform === 'win32' ? '.exe' : ''}`,
   );
-  const report = requireDirectoryReport(runScenario(executable, 'directory'));
+  const report = requireDirectoryReport(await runScenario(executable, 'directory'));
   if (report.boot_frames !== 109) {
     throw new Error(`Rust C64 reached BASIC READY in ${report.boot_frames} frames; expected 109.`);
   }
@@ -259,7 +271,7 @@ async function main(): Promise<void> {
     );
   }
 
-  const loadReport = requireLoadReport(runScenario(executable, 'load'));
+  const loadReport = requireLoadReport(await runScenario(executable, 'load'));
   if (
     loadReport.boot_frames !== 109 ||
     loadReport.directory_frames !== 101 ||
@@ -299,7 +311,7 @@ async function main(): Promise<void> {
     );
   }
 
-  const saveReport = requireSaveReport(runScenario(executable, 'save'));
+  const saveReport = requireSaveReport(await runScenario(executable, 'save'));
   if (
     saveReport.boot_frames !== 109 ||
     saveReport.directory_frames !== 101 ||
@@ -348,7 +360,7 @@ async function main(): Promise<void> {
   }
 
   const formatReport = requireFormatReport(
-    runScenario(executable, 'format', FORMAT_DISK.cachePath),
+    await runScenario(executable, 'format', FORMAT_DISK.cachePath),
   );
   if (
     formatReport.boot_frames !== 109 ||

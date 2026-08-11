@@ -9,11 +9,14 @@
 // --------------------------------------------------------------------------
 
 use std::error::Error;
-use std::io::{self, Read};
+use std::io;
 
 use c64_core::cpu::{Cpu6510, CpuBus};
 use c64_core::devices::via::{self, Mos6522, Mos6522ControlLine};
 use serde::{Deserialize, Serialize};
+
+#[path = "support/json_line.rs"]
+mod json_line;
 
 const DRIVE_RAM_SIZE: usize = 0x0800;
 const DRIVE_RAM_DECODE_END: u16 = 0x07ff;
@@ -195,9 +198,7 @@ fn replay(request: &ReplayRequest) -> Result<ReplayResult, Box<dyn Error>> {
 }
 
 fn main() -> Result<(), Box<dyn Error>> {
-    let mut input = String::new();
-    io::stdin().read_to_string(&mut input)?;
-    let requests: Vec<ReplayRequest> = serde_json::from_str(&input)?;
+    let requests: Vec<ReplayRequest> = json_line::read_stdin_json_line()?;
     let results = requests.iter().map(replay).collect::<Result<Vec<_>, _>>()?;
     serde_json::to_writer(io::stdout().lock(), &results)?;
     Ok(())

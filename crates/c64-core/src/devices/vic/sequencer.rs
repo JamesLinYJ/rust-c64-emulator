@@ -134,7 +134,11 @@ impl VicCycleSequencer {
     }
 
     pub const fn timing(&self) -> VicTiming {
-        self.bad_line_controller.timing()
+        *self.timing_ref()
+    }
+
+    const fn timing_ref(&self) -> &VicTiming {
+        self.bad_line_controller.timing_ref()
     }
 
     pub const fn aec_low(&self) -> bool {
@@ -166,8 +170,8 @@ impl VicCycleSequencer {
     }
 
     pub fn write_sprite_vertical_expansion_register(&mut self, value: u8) {
-        let apply_counter_crunch =
-            self.cycle_position == self.timing().sprite.memory_counter_crunch_cycle;
+        let memory_counter_crunch_cycle = self.timing_ref().sprite.memory_counter_crunch_cycle;
+        let apply_counter_crunch = self.cycle_position == memory_counter_crunch_cycle;
         for (index, sprite) in self.sprite_dma.iter_mut().enumerate() {
             if value & (1_u8 << index) == 0 {
                 sprite.clear_vertical_expansion(apply_counter_crunch);
@@ -177,9 +181,8 @@ impl VicCycleSequencer {
 
     pub fn tick(&mut self, signals: &VicCycleSignals) -> VicCycleResult {
         let (line_started, frame_started) = self.advance_raster_position();
-        let timing = self.timing();
         let schedule_index = usize::from(self.cycle_position - 1);
-        let bus_schedule = if timing == NTSC_VIC_TIMING {
+        let bus_schedule = if self.timing_ref().is_ntsc() {
             NTSC_BUS_SCHEDULE[schedule_index]
         } else {
             PAL_BUS_SCHEDULE[schedule_index]
@@ -194,39 +197,33 @@ impl VicCycleSequencer {
         });
         self.set_state_flag(STATE_BAD_LINE, bad_line_cycle.active());
         self.update_sprite_dma(signals);
-        let sprite_data_offsets = self.consume_scheduled_sprite_data(bus_schedule);
-        let ba_low = bad_line_cycle.ba_low()
-            || self.current_sprite_dma_mask & self.sprite_ba_mask(self.cycle_position) != 0;
-        let aec_low = bad_line_cycle.aec_low() || sprite_data_offsets[1].is_some();
-        self.set_state_flag(STATE_BA_LOW, ba_low);
-        self.set_state_flag(STATE_AEC_LOW, aec_low);
-        let completed_raster_line = if self.cycle_position == timing.cycles_per_raster_line {
-            Some(self.raster_position)
+        let sprite_data_offsets = if self.current_sprite_dma_mask == 0 {
+            [None; 2]
         } else {
-            None
+            self.consume_scheduled_sprite_data(bus_schedule)
         };
+        let ba_low = bad_line_cycle.ba_low()
+            || (self.current_sprite_dma_mask != 0
+                && self.current_sprite_dma_mask & self.sprite_ba_mask(self.cycle_position) != 0);
+        let aec_low = bad_line_cycle.aec_low() || sprite_data_offsets[1].is_some();
+        self.state_flags = (self.state_flags & !(STATE_BA_LOW | STATE_AEC_LOW))
+            | (u8::from(ba_low) << 1)
+            | u8::from(aec_low);
+        let completed_raster_line =
+            if self.cycle_position == self.timing_ref().cycles_per_raster_line {
+                Some(self.raster_position)
+            } else {
+                None
+            };
 
-        let mut flags = 0;
-        set_result_flag(&mut flags, RESULT_AEC_LOW, aec_low);
-        set_result_flag(&mut flags, RESULT_BA_LOW, ba_low);
-        set_result_flag(&mut flags, RESULT_BAD_LINE, bad_line_cycle.active());
-        set_result_flag(
-            &mut flags,
-            RESULT_BAD_LINE_CONDITION,
-            bad_line_cycle.condition(),
-        );
-        set_result_flag(
-            &mut flags,
-            RESULT_ENTER_DISPLAY_STATE,
-            bad_line_cycle.enter_display_state(),
-        );
-        set_result_flag(&mut flags, RESULT_FRAME_STARTED, frame_started);
-        set_result_flag(&mut flags, RESULT_LINE_STARTED, line_started);
-        set_result_flag(
-            &mut flags,
-            RESULT_RESET_ROW_COUNTER,
-            bad_line_cycle.reset_row_counter(),
-        );
+        let flags = u16::from(aec_low)
+            | (u16::from(ba_low) << 1)
+            | (u16::from(bad_line_cycle.active()) << 2)
+            | (u16::from(bad_line_cycle.condition()) << 3)
+            | (u16::from(bad_line_cycle.enter_display_state()) << 4)
+            | (u16::from(frame_started) << 5)
+            | (u16::from(line_started) << 6)
+            | (u16::from(bad_line_cycle.reset_row_counter()) << 7);
         VicCycleResult {
             flags,
             bus_schedule,
@@ -254,14 +251,15 @@ impl VicCycleSequencer {
     }
 
     fn advance_raster_position(&mut self) -> (bool, bool) {
-        let timing = self.timing();
+        let cycles_per_raster_line = self.timing_ref().cycles_per_raster_line;
+        let raster_line_count = self.timing_ref().raster_line_count;
         if self.cycle_position == 0 {
             self.cycle_position = 1;
             return (true, true);
         }
-        if self.cycle_position == timing.cycles_per_raster_line {
+        if self.cycle_position == cycles_per_raster_line {
             self.cycle_position = 1;
-            self.raster_position = (self.raster_position + 1) % timing.raster_line_count;
+            self.raster_position = (self.raster_position + 1) % raster_line_count;
             return (true, self.raster_position == 0);
         }
         self.cycle_position += 1;
@@ -269,19 +267,21 @@ impl VicCycleSequencer {
     }
 
     fn update_sprite_dma(&mut self, signals: &VicCycleSignals) {
-        let timing = self.timing();
+        if signals.sprite_enable_mask == 0
+            && self.current_sprite_dma_mask == 0
+            && self.current_sprite_display_mask == 0
+        {
+            return;
+        }
+        let timing = self.timing_ref().sprite;
         let mut dma_mask_changed = false;
-        if self.cycle_position == timing.sprite.memory_counter_update_cycle {
+        if self.cycle_position == timing.memory_counter_update_cycle {
             for sprite in &mut self.sprite_dma {
                 sprite.update_memory_counter_base();
             }
             dma_mask_changed = true;
         }
-        if timing
-            .sprite
-            .dma_check_cycles
-            .contains(&self.cycle_position)
-        {
+        if timing.dma_check_cycles.contains(&self.cycle_position) {
             let raster_low = self.raster_position.to_le_bytes()[0];
             for (index, sprite) in self.sprite_dma.iter_mut().enumerate() {
                 let bit = 1_u8 << index;
@@ -294,14 +294,14 @@ impl VicCycleSequencer {
             }
             dma_mask_changed = true;
         }
-        if self.cycle_position == timing.sprite.expansion_check_cycle {
+        if self.cycle_position == timing.expansion_check_cycle {
             for (index, sprite) in self.sprite_dma.iter_mut().enumerate() {
                 sprite.clock_vertical_expansion(
                     signals.sprite_vertical_expansion_mask & (1_u8 << index) != 0,
                 );
             }
         }
-        if self.cycle_position == timing.sprite.prepare_display_cycle {
+        if self.cycle_position == timing.prepare_display_cycle {
             let raster_low = self.raster_position.to_le_bytes()[0];
             for (index, sprite) in self.sprite_dma.iter_mut().enumerate() {
                 let bit = 1_u8 << index;
@@ -360,7 +360,7 @@ impl VicCycleSequencer {
     }
 
     fn sprite_ba_mask(&self, cycle: u8) -> u8 {
-        if self.timing() == NTSC_VIC_TIMING {
+        if self.timing_ref().is_ntsc() {
             NTSC_SPRITE_BA_MASK_BY_CYCLE[usize::from(cycle)]
         } else {
             self.sprite_ba_mask_by_cycle[usize::from(cycle)]
@@ -427,15 +427,26 @@ const fn wrap_cycle(cycle: u8, cycles_per_raster_line: u8) -> u8 {
     (cycle - 1) % cycles_per_raster_line + 1
 }
 
-fn set_result_flag(flags: &mut u16, flag: u16, enabled: bool) {
-    if enabled {
-        *flags |= flag;
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::{VicCycleSequencer, VicCycleSignals};
+    use crate::devices::vic::{NTSC_VIC_TIMING, PAL_VIC_TIMING, VicTiming};
+
+    fn assert_disabled_sprites_leave_bus_idle(timing: VicTiming) {
+        let mut sequencer = VicCycleSequencer::new_with_timing(timing);
+        let signals = VicCycleSignals::default();
+        let cycles =
+            usize::from(timing.cycles_per_raster_line) * usize::from(timing.raster_line_count);
+
+        for _ in 0..cycles {
+            let result = sequencer.tick(&signals);
+            assert_eq!(result.sprite_data_offsets, [None; 2]);
+            assert_eq!(result.sprite_dma_mask, 0);
+            assert_eq!(result.sprite_display_mask, 0);
+            assert!(!result.ba_low());
+            assert!(!result.aec_low());
+        }
+    }
 
     #[test]
     fn raster_wraps_after_312_lines_of_63_cycles() {
@@ -471,5 +482,30 @@ mod tests {
         assert!(saw_ba);
         assert!(saw_aec);
         assert_ne!(sequencer.sprite_dma_mask(), 0);
+    }
+
+    #[test]
+    fn disabled_sprites_leave_pal_and_ntsc_bus_slots_idle() {
+        assert_disabled_sprites_leave_bus_idle(PAL_VIC_TIMING);
+        assert_disabled_sprites_leave_bus_idle(NTSC_VIC_TIMING);
+    }
+
+    #[test]
+    fn disabled_sprite_coordinates_do_not_affect_sequencing() {
+        let mut zero_coordinates = VicCycleSequencer::new();
+        let mut arbitrary_coordinates = zero_coordinates.clone();
+        let zero_signals = VicCycleSignals::default();
+        let arbitrary_signals = VicCycleSignals {
+            sprite_y: [0x00, 0x19, 0x33, 0x55, 0x80, 0xaa, 0xd7, 0xff],
+            ..VicCycleSignals::default()
+        };
+
+        for _ in 0..usize::from(PAL_VIC_TIMING.cycles_per_raster_line) {
+            assert_eq!(
+                zero_coordinates.tick(&zero_signals),
+                arbitrary_coordinates.tick(&arbitrary_signals)
+            );
+        }
+        assert_eq!(zero_coordinates, arbitrary_coordinates);
     }
 }

@@ -102,6 +102,10 @@ impl C64HostInput {
         self.shift_lock_pressed
     }
 
+    pub(crate) fn keyboard_matrix_is_open(&self) -> bool {
+        self.pressed_rows_by_column == [0; C64_KEYBOARD_MATRIX_SIDE] && !self.shift_lock_pressed
+    }
+
     /// 原子替换一份宿主输入快照。
     ///
     /// # Errors
@@ -141,6 +145,12 @@ impl C64HostInput {
     ) -> C64HostInputPortValues {
         let mut resolved_port_a = port_a.output_pins & port_a.external_input_pins;
         let mut resolved_port_b = port_b.output_pins & port_b.external_input_pins;
+        if self.keyboard_matrix_is_open() {
+            return C64HostInputPortValues {
+                port_a: resolved_port_a,
+                port_b: resolved_port_b,
+            };
+        }
 
         let (components, component_count) = self.connected_components();
         for component in &components[..component_count] {
@@ -175,6 +185,9 @@ impl C64HostInput {
     }
 
     pub fn clock_cycle(&mut self) {
+        if self.restore_pulse_cycles_remaining == 0 {
+            return;
+        }
         self.restore_pulse_cycles_remaining = self.restore_pulse_cycles_remaining.saturating_sub(1);
     }
 
@@ -264,4 +277,32 @@ impl MatrixComponent {
         columns: 0,
         rows: 0,
     };
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{C64HostInput, C64HostInputPortState, C64HostInputPortValues};
+
+    #[test]
+    fn empty_keyboard_preserves_only_wired_port_levels() {
+        let input = C64HostInput::new();
+        assert_eq!(
+            input.resolve_port_inputs(
+                C64HostInputPortState {
+                    data_direction: 0x0f,
+                    external_input_pins: 0xf3,
+                    output_pins: 0x5f,
+                },
+                C64HostInputPortState {
+                    data_direction: 0xf0,
+                    external_input_pins: 0xcf,
+                    output_pins: 0xfa,
+                },
+            ),
+            C64HostInputPortValues {
+                port_a: 0x53,
+                port_b: 0xca,
+            }
+        );
+    }
 }

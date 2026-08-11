@@ -19,6 +19,7 @@ import { SidFilter } from '../src/devices/SidFilter';
 import { SID_MODEL, type SidModel } from '../src/devices/SidModel';
 import { SidOscillator } from '../src/devices/SidOscillator';
 import { SID_CONTROL_BIT, SID_FILTER_BIT } from '../src/devices/sidRegisters';
+import { runBoundedCommand } from './runRustJsonTrace';
 
 const RESID_REVISION = 'dd98b495dd4b49612922fdba20ad71304361cd1f';
 const RESID_RAW_ROOT = `https://raw.githubusercontent.com/VICE-Team/svn-mirror/${RESID_REVISION}/vice/src/resid`;
@@ -606,10 +607,18 @@ async function buildOracles(): Promise<void> {
   await Promise.all(REFERENCE_SOURCES.map(loadReferenceSource));
   await generateWaveformHeaders();
 
-  compileOracle(ENVELOPE_ORACLE_SOURCE, ENVELOPE_ORACLE_EXECUTABLE, ['envelope.cc', 'dac.cc']);
-  compileOracle(OSCILLATOR_ORACLE_SOURCE, OSCILLATOR_ORACLE_EXECUTABLE, ['wave.cc', 'dac.cc']);
-  compileOracle(FILTER_ORACLE_SOURCE, FILTER_ORACLE_EXECUTABLE, ['filter.cc', 'dac.cc']);
-  compileOracle(EXTERNAL_FILTER_ORACLE_SOURCE, EXTERNAL_FILTER_ORACLE_EXECUTABLE, ['extfilt.cc']);
+  await compileOracle(ENVELOPE_ORACLE_SOURCE, ENVELOPE_ORACLE_EXECUTABLE, [
+    'envelope.cc',
+    'dac.cc',
+  ]);
+  await compileOracle(OSCILLATOR_ORACLE_SOURCE, OSCILLATOR_ORACLE_EXECUTABLE, [
+    'wave.cc',
+    'dac.cc',
+  ]);
+  await compileOracle(FILTER_ORACLE_SOURCE, FILTER_ORACLE_EXECUTABLE, ['filter.cc', 'dac.cc']);
+  await compileOracle(EXTERNAL_FILTER_ORACLE_SOURCE, EXTERNAL_FILTER_ORACLE_EXECUTABLE, [
+    'extfilt.cc',
+  ]);
 }
 
 async function generateWaveformHeaders(): Promise<void> {
@@ -643,11 +652,11 @@ async function generateWaveformHeaders(): Promise<void> {
   }
 }
 
-function compileOracle(
+async function compileOracle(
   source: string,
   executable: string,
   referenceImplementations: readonly string[],
-): void {
+): Promise<void> {
   const compilerArguments = [
     '-std=c++17',
     '-O2',
@@ -660,17 +669,12 @@ function compileOracle(
     '-o',
     executable,
   ];
-  const compiler = spawnSync('g++', compilerArguments, { encoding: 'utf8' });
-  if (compiler.error) {
-    throw new Error('g++ is required to build the independent reSID oracle.', {
-      cause: compiler.error,
-    });
-  }
-  if (compiler.status !== 0) {
-    throw new Error(
-      `Unable to build reSID oracle ${basename(source)} (exit ${String(compiler.status)}):\n${compiler.stderr}`,
-    );
-  }
+  await runBoundedCommand({
+    arguments: compilerArguments,
+    command: 'g++',
+    label: `Build reSID oracle ${basename(source)}`,
+    maximumOutputBytes: 16 * 1024 * 1024,
+  });
 }
 
 function serializeCommands(commands: readonly EnvelopeCommand[]): string {
@@ -692,19 +696,15 @@ function serializeCommands(commands: readonly EnvelopeCommand[]): string {
     .join('\n');
 }
 
-function runEnvelopeOracle(commands: readonly EnvelopeCommand[]): number[] {
-  const result = spawnSync(ENVELOPE_ORACLE_EXECUTABLE, [], {
-    encoding: 'utf8',
+async function runEnvelopeOracle(commands: readonly EnvelopeCommand[]): Promise<number[]> {
+  const stdout = await runBoundedCommand({
+    arguments: [],
+    command: ENVELOPE_ORACLE_EXECUTABLE,
     input: serializeCommands(commands),
-    maxBuffer: 16 * 1024 * 1024,
+    label: `reSID oracle ${basename(ENVELOPE_ORACLE_EXECUTABLE)}`,
+    maximumOutputBytes: 16 * 1024 * 1024,
   });
-  if (result.error) throw new Error('Unable to execute the reSID oracle.', { cause: result.error });
-  if (result.status !== 0) {
-    throw new Error(
-      `reSID oracle ${basename(ENVELOPE_ORACLE_EXECUTABLE)} failed with exit ${String(result.status)}: ${result.stderr}`,
-    );
-  }
-  const output = result.stdout.trim();
+  const output = stdout.trim();
   return output.length === 0 ? [] : output.split(/\s+/u).map(Number);
 }
 
@@ -736,8 +736,8 @@ function runTypeScript(commands: readonly EnvelopeCommand[]): number[] {
   return output;
 }
 
-function verifyScenario(scenario: EnvelopeScenario): number {
-  const reference = runEnvelopeOracle(scenario.commands);
+async function verifyScenario(scenario: EnvelopeScenario): Promise<number> {
+  const reference = await runEnvelopeOracle(scenario.commands);
   const actual = runTypeScript(scenario.commands);
   if (actual.length !== reference.length) {
     throw new Error(
@@ -772,21 +772,15 @@ function serializeOscillatorScenario(scenario: OscillatorScenario): string {
   return [`MODEL ${scenario.model}`, ...commands].join('\n');
 }
 
-function runOscillatorOracle(scenario: OscillatorScenario): number[] {
-  const result = spawnSync(OSCILLATOR_ORACLE_EXECUTABLE, [], {
-    encoding: 'utf8',
+async function runOscillatorOracle(scenario: OscillatorScenario): Promise<number[]> {
+  const stdout = await runBoundedCommand({
+    arguments: [],
+    command: OSCILLATOR_ORACLE_EXECUTABLE,
     input: serializeOscillatorScenario(scenario),
-    maxBuffer: 16 * 1024 * 1024,
+    label: `reSID oracle ${basename(OSCILLATOR_ORACLE_EXECUTABLE)}`,
+    maximumOutputBytes: 16 * 1024 * 1024,
   });
-  if (result.error) {
-    throw new Error('Unable to execute the reSID oscillator oracle.', { cause: result.error });
-  }
-  if (result.status !== 0) {
-    throw new Error(
-      `reSID oracle ${basename(OSCILLATOR_ORACLE_EXECUTABLE)} failed with exit ${String(result.status)}: ${result.stderr}`,
-    );
-  }
-  const output = result.stdout.trim();
+  const output = stdout.trim();
   return output.length === 0 ? [] : output.split(/\s+/u).map(Number);
 }
 
@@ -828,8 +822,8 @@ function runTypeScriptOscillators(scenario: OscillatorScenario): number[] {
   return output;
 }
 
-function verifyOscillatorScenario(scenario: OscillatorScenario): number {
-  const reference = runOscillatorOracle(scenario);
+async function verifyOscillatorScenario(scenario: OscillatorScenario): Promise<number> {
+  const reference = await runOscillatorOracle(scenario);
   const actual = runTypeScriptOscillators(scenario);
   if (actual.length !== reference.length) {
     throw new Error(
@@ -872,21 +866,15 @@ function serializeFilterScenarios(scenarios: readonly FilterScenario[]): string 
     .join('\n');
 }
 
-function runFilterOracle(scenarios: readonly FilterScenario[]): number[] {
-  const result = spawnSync(FILTER_ORACLE_EXECUTABLE, [], {
-    encoding: 'utf8',
+async function runFilterOracle(scenarios: readonly FilterScenario[]): Promise<number[]> {
+  const stdout = await runBoundedCommand({
+    arguments: [],
+    command: FILTER_ORACLE_EXECUTABLE,
     input: serializeFilterScenarios(scenarios),
-    maxBuffer: 16 * 1024 * 1024,
+    label: `reSID oracle ${basename(FILTER_ORACLE_EXECUTABLE)}`,
+    maximumOutputBytes: 16 * 1024 * 1024,
   });
-  if (result.error) {
-    throw new Error('Unable to execute the reSID filter oracle.', { cause: result.error });
-  }
-  if (result.status !== 0) {
-    throw new Error(
-      `reSID oracle ${basename(FILTER_ORACLE_EXECUTABLE)} failed with exit ${String(result.status)}: ${result.stderr}`,
-    );
-  }
-  const output = result.stdout.trim();
+  const output = stdout.trim();
   return output.length === 0 ? [] : output.split(/\s+/u).map(Number);
 }
 
@@ -940,8 +928,8 @@ function filterScenarioAtSample(sample: number): { readonly cycle: number; reado
   throw new RangeError(`Filter sample ${sample} is outside all scenarios.`);
 }
 
-function verifyFilterScenarios(): number {
-  const reference = runFilterOracle(FILTER_SCENARIOS);
+async function verifyFilterScenarios(): Promise<number> {
+  const reference = await runFilterOracle(FILTER_SCENARIOS);
   const actual = runTypeScriptFilter(FILTER_SCENARIOS);
   if (actual.length !== reference.length) {
     throw new Error(
@@ -975,23 +963,17 @@ function serializeExternalFilterScenarios(scenarios: readonly ExternalFilterScen
     .join('\n');
 }
 
-function runExternalFilterOracle(scenarios: readonly ExternalFilterScenario[]): number[] {
-  const result = spawnSync(EXTERNAL_FILTER_ORACLE_EXECUTABLE, [], {
-    encoding: 'utf8',
+async function runExternalFilterOracle(
+  scenarios: readonly ExternalFilterScenario[],
+): Promise<number[]> {
+  const stdout = await runBoundedCommand({
+    arguments: [],
+    command: EXTERNAL_FILTER_ORACLE_EXECUTABLE,
     input: serializeExternalFilterScenarios(scenarios),
-    maxBuffer: 16 * 1024 * 1024,
+    label: `reSID oracle ${basename(EXTERNAL_FILTER_ORACLE_EXECUTABLE)}`,
+    maximumOutputBytes: 16 * 1024 * 1024,
   });
-  if (result.error) {
-    throw new Error('Unable to execute the reSID external-filter oracle.', {
-      cause: result.error,
-    });
-  }
-  if (result.status !== 0) {
-    throw new Error(
-      `reSID oracle ${basename(EXTERNAL_FILTER_ORACLE_EXECUTABLE)} failed with exit ${String(result.status)}: ${result.stderr}`,
-    );
-  }
-  const output = result.stdout.trim();
+  const output = stdout.trim();
   return output.length === 0 ? [] : output.split(/\s+/u).map(Number);
 }
 
@@ -1038,8 +1020,8 @@ function externalFilterScenarioAtSample(sample: number): {
   throw new RangeError(`External-filter sample ${sample} is outside all scenarios.`);
 }
 
-function verifyExternalFilterScenarios(): number {
-  const reference = runExternalFilterOracle(EXTERNAL_FILTER_SCENARIOS);
+async function verifyExternalFilterScenarios(): Promise<number> {
+  const reference = await runExternalFilterOracle(EXTERNAL_FILTER_SCENARIOS);
   const actual = runTypeScriptExternalFilter(EXTERNAL_FILTER_SCENARIOS);
   if (actual.length !== reference.length) {
     throw new Error(
@@ -1060,14 +1042,14 @@ async function main(): Promise<void> {
   await buildOracles();
   let verifiedEnvelopeCycles = 0;
   for (const scenario of ENVELOPE_SCENARIOS) {
-    verifiedEnvelopeCycles += verifyScenario(scenario);
+    verifiedEnvelopeCycles += await verifyScenario(scenario);
   }
   let verifiedOscillatorSamples = 0;
   for (const scenario of OSCILLATOR_SCENARIOS) {
-    verifiedOscillatorSamples += verifyOscillatorScenario(scenario);
+    verifiedOscillatorSamples += await verifyOscillatorScenario(scenario);
   }
-  const verifiedFilterSamples = verifyFilterScenarios();
-  const verifiedExternalFilterSamples = verifyExternalFilterScenarios();
+  const verifiedFilterSamples = await verifyFilterScenarios();
+  const verifiedExternalFilterSamples = await verifyExternalFilterScenarios();
   console.log(
     `PASS reSID SID oracle (${RESID_REVISION.slice(0, 12)}): ${ENVELOPE_SCENARIOS.length} envelope scenarios / ${verifiedEnvelopeCycles.toLocaleString('en-US')} cycles; ${OSCILLATOR_SCENARIOS.length} oscillator scenarios / ${verifiedOscillatorSamples.toLocaleString('en-US')} samples; ${FILTER_SCENARIOS.length} MOS 6581/8580 filter scenarios / ${verifiedFilterSamples.toLocaleString('en-US')} samples; ${EXTERNAL_FILTER_SCENARIOS.length} board external-filter scenarios / ${verifiedExternalFilterSamples.toLocaleString('en-US')} samples.`,
   );

@@ -8,12 +8,12 @@
 //   作者:       OpenAI Codex
 // --------------------------------------------------------------------------
 
-import { spawnSync } from 'node:child_process';
 import { isDeepStrictEqual } from 'node:util';
 
 import { Sid, type SidVoiceState } from '../src/devices/Sid';
 import { SID_MODEL, type SidModel } from '../src/devices/SidModel';
 import { SID_CONTROL_BIT, SID_FILTER_BIT, SID_REGISTER } from '../src/devices/sidRegisters';
+import { runRustJsonTrace } from './runRustJsonTrace';
 
 type Operation =
   | { readonly cycles: number; readonly kind: 'clock' }
@@ -145,22 +145,15 @@ function runTypeScript(scenario: Scenario): readonly Observation[] {
   });
 }
 
-function runRust(scenarios: readonly Scenario[]): readonly (readonly Observation[])[] {
-  const result = spawnSync(
-    'cargo',
-    ['run', '--quiet', '--locked', '-p', 'c64-core', '--example', 'sid_device_trace'],
-    {
-      cwd: process.cwd(),
-      encoding: 'utf8',
-      input: JSON.stringify(scenarios),
-      maxBuffer: 96 * 1024 * 1024,
-    },
-  );
-  if (result.error) throw result.error;
-  if (result.status !== 0) {
-    throw new Error(`Rust SID device adapter failed (${String(result.status)}):\n${result.stderr}`);
-  }
-  return JSON.parse(result.stdout) as readonly (readonly Observation[])[];
+async function runRust(
+  scenarios: readonly Scenario[],
+): Promise<readonly (readonly Observation[])[]> {
+  return runRustJsonTrace<readonly (readonly Observation[])[]>({
+    example: 'sid_device_trace',
+    input: scenarios,
+    label: 'Rust SID device adapter',
+    maximumOutputBytes: 96 * 1024 * 1024,
+  });
 }
 
 const scenarios: readonly Scenario[] = [
@@ -177,7 +170,7 @@ const scenarios: readonly Scenario[] = [
     operations: buildOperations(0x8580_c64),
   },
 ];
-const actualScenarios = runRust(scenarios);
+const actualScenarios = await runRust(scenarios);
 let verifiedOperations = 0;
 for (const [scenarioIndex, scenario] of scenarios.entries()) {
   const expected = runTypeScript(scenario);

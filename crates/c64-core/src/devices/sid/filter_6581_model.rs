@@ -98,6 +98,12 @@ pub(crate) struct Sid6581IntegratorState {
     op_amp_input: u16,
 }
 
+impl Sid6581IntegratorState {
+    pub(crate) const fn is_zero_capacitor_equilibrium(&self, op_amp_input: u16) -> bool {
+        self.capacitor_voltage == 0 && self.op_amp_input == op_amp_input
+    }
+}
+
 struct OpAmpTransferTable {
     derivative: Vec<i16>,
     input: Vec<u16>,
@@ -204,6 +210,15 @@ impl Sid6581FilterModel {
         let scaled =
             i64::from(sample) * i64::from(self.voice_scale) * SID_EXTERNAL_INPUT_VOICE_SPAN;
         (scaled >> SID_EXTERNAL_INPUT_FRACTION_BITS) as i32 + i32::from(self.mixer[0])
+    }
+
+    pub(crate) fn zero_capacitor_op_amp_input(&self) -> u16 {
+        self.op_amp_reverse[NORMALIZED_VOLTAGE_MIDPOINT as usize]
+    }
+
+    pub(crate) fn default_zero_input_output(&self) -> i16 {
+        let mixed_voltage = self.mix_audio_inputs(3, self.voice_dc * 3);
+        self.apply_volume(0, mixed_voltage)
     }
 
     pub(crate) fn cutoff_control_voltage_squared(&self, cutoff: u16) -> i64 {
