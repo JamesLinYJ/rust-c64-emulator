@@ -101,8 +101,10 @@ Vite bundle 的缺口，远端 [CI run 31496827909](https://github.com/JamesLinY
 generation 和全局映射 generation，CPU、REU、Enhanced DMA、Host 写入共用同一失效路径。
 Turbo CPU 与 REU DMA 访问已通过强顺序 `BusBridge`：处理器端口映射变化、REU 即时 DMA、
 `$FF00` 延迟触发及 REU 写入代码页失效均有根因测试，IO2 被 PLA 屏蔽时也不会误判为 REU。
-Strict CPU 继续走无额外桥接 trace 的原周期精确热路径。VIC/Enhanced DMA 主控的统一桥接、block
-执行器精确退出和本节其余验收尚未完成，因此 M2 不标记完成。
+REU 使用独立 `ReuDmaBus`，不会把非 CPU 主控分派带入 `ClockedCpuBus` 热路径；提交 `1f385fb`
+的远端 CI 五项通过，Chrome、Edge、Firefox、WebKit 均为 50 host FPS，p95 分别为 1.90、1.70、
+14.00、3.00 ms，全部 0/120 超预算。Strict CPU 继续走无额外桥接 trace 的原周期精确热路径。
+VIC/Enhanced DMA 主控的统一桥接、block 执行器精确退出和本节其余验收尚未完成，因此 M2 不标记完成。
 
 ## M3：Turbo 执行引擎
 
