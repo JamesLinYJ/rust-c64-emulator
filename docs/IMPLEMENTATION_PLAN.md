@@ -42,14 +42,19 @@ Cartridge 与程序语料无差异。参考资产下载采用哈希校验、有�
 
 - [x] 迁移 6510、处理器端口、PLA、RAM/ROM 和精确总线周期。
 - [x] 迁移 VIC-II、CIA、SID 和主机严格调度器。
-- [ ] 完成 1541 整机迁移；Rust 整机与目录/LOAD/SAVE/format 阶段门禁已通过，完整 VICE `verify:drive` 集合仍待迁移验收。
+- [x] 完成 1541 VIA2、磁盘机构、D64/G64、drive memory、独立 6502、整数时钟同步与 C64Chipset/IEC 整机迁移。
 - [x] 迁移 Datasette、TAP/Writable TAP、6510 motor/write/sense/read 接线与粗粒度 Wasm 媒体 ABI。
 - [x] 迁移 CRT、普通 8K/16K/Ultimax、Ocean、Magic Desk、EasyFlash 与 AM29F040B 状态机。
 - [x] 迁移 REU。
-- [ ] 把版本化架构状态扩展到全部芯片/外设；现有 trace 和 TypeScript/Rust 差分适配器继续补齐。
+- [x] 把版本化架构状态扩展到全部芯片、外设、媒体和指令中间周期，并保留 save-state v1 向后兼容。
 - [ ] 所有参考测试一致后切换生产 Strict；TypeScript 核心转为测试 oracle。
 
 验收：全部 256 opcode、IRQ/NMI/RDY/BA/AEC、设备参考轨迹、程序、视频和音频零语义回归。
+
+1541 验收证据（2026年08月11日）：VIA2、GCR、D64/G64、磁盘机构、2 KiB RAM/ROM 映射、
+独立 6502、整数主机/驱动器时钟和 C64Chipset/IEC 均通过 TypeScript/Rust 确定性差分；完整
+VICE revision 46176 `verify:drive` 通过目录、LOAD、SAVE、format、IEC delay、write-protect、
+disk-change 与 HLS protection，D64 写回和 G64 可变速度图保持可重放。
 
 Datasette 验收证据（2026年08月11日）：Rust KERNAL LOAD 消耗 43,734 个物理 READ 脉冲并在
 `$C000-$C03F` 得到固定载荷；VICE revision 46176 `tap204060once.prg` 产生
@@ -65,6 +70,12 @@ REU 验收证据（2026年08月11日）：Rust 整机通过固定 SHA-256 的 VI
 QuickReu 1.1.1 全部 8 个功能 PRG，均报告零失败类别；每个程序完成 44,588 个 DMA 总线周期，
 并覆盖 copy/fetch/swap/verify、autoload、IRQ、`$FF00` 触发、经典 REU 尺寸与镜像、
 VIC 优先停顿、隐藏 RAM/页 generation、扩展槽互斥和粗粒度 Wasm 持久化 ABI。
+
+完整 save-state 验收证据（2026年08月11日）：格式 v2 `RC64VM02` 使用长度边界、CRC32 和精确
+解码，v1 镜像继续可载入；CPU 微周期、虚拟时钟、64 KiB RAM/映射、VIC/CIA/SID、IEC、1541
+与 D64/G64、Datasette/TAP、Cartridge/EasyFlash（含进行中的 flash 命令）及 REU/DMA 均可原子
+恢复并确定性继续。C64 firmware 由目标 runtime 注入，不写入状态文件。提交 `8948f68` 通过本地
+完整 Rust/TypeScript/Wasm/VICE 门禁及远端 [CI run 31491094157](https://github.com/JamesLinYJ/rust-c64-emulator/actions/runs/31491094157) 的全部 job。
 
 ## M2：Turbo 语义
 
