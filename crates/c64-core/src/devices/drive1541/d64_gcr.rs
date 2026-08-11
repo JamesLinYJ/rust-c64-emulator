@@ -124,7 +124,7 @@ pub struct D64GcrTrackDecodeResult {
 /// # Errors
 ///
 /// Rejects input whose length is not divisible by four.
-pub fn encode_commmodore_gcr(source: &[u8]) -> Result<Vec<u8>, D64GcrError> {
+pub fn encode_commodore_gcr(source: &[u8]) -> Result<Vec<u8>, D64GcrError> {
     if !source.len().is_multiple_of(DECODED_GROUP_SIZE) {
         return Err(D64GcrError::InvalidDecodedLength(source.len()));
     }
@@ -245,7 +245,7 @@ pub fn encode_d64_sector_to_gcr(
         0x0f,
         0x0f,
     ];
-    let encoded_header = encode_commmodore_gcr(&decoded_header)?;
+    let encoded_header = encode_commodore_gcr(&decoded_header)?;
     output[offset..offset + encoded_header.len()].copy_from_slice(&encoded_header);
     offset += encoded_header.len() + HEADER_GAP_SIZE;
 
@@ -263,7 +263,7 @@ pub fn encode_d64_sector_to_gcr(
         checksum ^= value;
     }
     decoded_data[257] = checksum;
-    let encoded_data = encode_commmodore_gcr(&decoded_data)?;
+    let encoded_data = encode_commodore_gcr(&decoded_data)?;
     output[offset..offset + encoded_data.len()].copy_from_slice(&encoded_data);
     offset += encoded_data.len() + data_gap_size;
     if offset != output.len() {
@@ -540,13 +540,13 @@ mod tests {
     use crate::media::d64::{D64_SECTOR_SIZE, D64DiskImage, d64_sector_count_through_track};
 
     use super::{
-        build_d64_gcr_track, decode_commodore_gcr, decode_d64_gcr_track, encode_commmodore_gcr,
+        build_d64_gcr_track, decode_commodore_gcr, decode_d64_gcr_track, encode_commodore_gcr,
     };
 
     #[test]
     fn codec_round_trips_every_byte_value() {
         let source: Vec<u8> = (0..=u8::MAX).collect();
-        let encoded = encode_commmodore_gcr(&source).unwrap();
+        let encoded = encode_commodore_gcr(&source).unwrap();
         assert_eq!(decode_commodore_gcr(&encoded).unwrap(), source);
     }
 
