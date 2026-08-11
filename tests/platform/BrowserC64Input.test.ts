@@ -290,4 +290,97 @@ describe('BrowserC64Input', () => {
     visibilityState.mockRestore();
     input.dispose();
   });
+
+  it('turns mobile beforeinput text into a complete C64 matrix pulse', () => {
+    vi.useFakeTimers();
+    const target = document.createElement('textarea');
+    const { input, keyboard } = createInput(null, target);
+    try {
+      const event = new InputEvent('beforeinput', {
+        bubbles: true,
+        cancelable: true,
+        data: 'a',
+        inputType: 'insertText',
+      });
+
+      expect(target.dispatchEvent(event)).toBe(false);
+      expect(event.defaultPrevented).toBe(true);
+      expect(scanPortB(keyboard, 0xfd)).toBe(0xfb);
+
+      vi.runAllTimers();
+      expect(scanPortB(keyboard, 0xfd)).toBe(0xff);
+    } finally {
+      input.dispose();
+      vi.useRealTimers();
+    }
+  });
+
+  it('uses C64 shifted chords for punctuation produced by a soft keyboard', () => {
+    vi.useFakeTimers();
+    const target = document.createElement('textarea');
+    const { input, keyboard } = createInput(null, target);
+    try {
+      target.dispatchEvent(
+        new InputEvent('beforeinput', {
+          bubbles: true,
+          cancelable: true,
+          data: '?',
+          inputType: 'insertText',
+        }),
+      );
+
+      expect(scanPortB(keyboard, 0xfd)).toBe(0x7f);
+      expect(scanPortB(keyboard, 0xbf)).toBe(0x7f);
+      vi.runAllTimers();
+      expect(scanPortB(keyboard, 0xfd)).toBe(0xff);
+      expect(scanPortB(keyboard, 0xbf)).toBe(0xff);
+    } finally {
+      input.dispose();
+      vi.useRealTimers();
+    }
+  });
+
+  it('queues mobile Enter and Delete operations without accepting intermediate composition', () => {
+    vi.useFakeTimers();
+    const target = document.createElement('textarea');
+    const { input, keyboard } = createInput(null, target);
+    try {
+      const composition = new InputEvent('beforeinput', {
+        bubbles: true,
+        cancelable: true,
+        data: 'a',
+        inputType: 'insertCompositionText',
+        isComposing: true,
+      });
+      target.dispatchEvent(composition);
+      expect(composition.defaultPrevented).toBe(false);
+      expect(scanPortB(keyboard, 0xfd)).toBe(0xff);
+
+      target.dispatchEvent(
+        new InputEvent('beforeinput', {
+          bubbles: true,
+          cancelable: true,
+          inputType: 'insertLineBreak',
+        }),
+      );
+      target.dispatchEvent(
+        new InputEvent('beforeinput', {
+          bubbles: true,
+          cancelable: true,
+          inputType: 'deleteContentBackward',
+        }),
+      );
+      expect(scanPortB(keyboard, 0xfe)).toBe(0xfd);
+
+      vi.advanceTimersToNextTimer();
+      expect(scanPortB(keyboard, 0xfe)).toBe(0xff);
+      vi.advanceTimersToNextTimer();
+      expect(scanPortB(keyboard, 0xfe)).toBe(0xfe);
+      vi.runAllTimers();
+      expect(scanPortB(keyboard, 0xfe)).toBe(0xff);
+    } finally {
+      input.dispose();
+      vi.useRealTimers();
+    }
+  });
 });

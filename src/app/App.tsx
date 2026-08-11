@@ -18,15 +18,16 @@ import { useC64Emulator } from './useC64Emulator';
 
 export function App() {
   const canvasRef = useRef<HTMLCanvasElement>(null);
+  const keyboardInputRef = useRef<HTMLTextAreaElement>(null);
   const screenFrameRef = useRef<HTMLDivElement>(null);
   const [displayScale, setDisplayScale] = useState<DisplayScale>('fit');
   const [darkTheme, setDarkTheme] = useState(false);
   const [isFullscreen, setIsFullscreen] = useState(false);
-  const emulator = useC64Emulator(canvasRef, screenFrameRef);
+  const emulator = useC64Emulator(canvasRef, keyboardInputRef);
   const { loadBuiltInProgram, loadLocalProgram, reset, toggle } = emulator;
 
   const focusScreen = useCallback((): void => {
-    screenFrameRef.current?.focus();
+    keyboardInputRef.current?.focus({ preventScroll: true });
   }, []);
 
   const handleLoadProgram = useCallback(
@@ -89,6 +90,7 @@ export function App() {
             bootComplete={emulator.bootComplete}
             canvasRef={canvasRef}
             framesPerSecond={emulator.framesPerSecond}
+            keyboardInputRef={keyboardInputRef}
             message={emulator.message}
             messageTone={emulator.messageTone}
             overBudgetFrames={emulator.overBudgetFrames}

@@ -214,11 +214,10 @@ function runScenario(
   scenario: string,
   diskPath = FRAMEWORK_DISK.cachePath,
 ): string {
-  return execFileSync(
-    executable,
-    [...FIRMWARE_PATHS, DRIVE_ROM.cachePath, diskPath, scenario],
-    { encoding: 'utf8', maxBuffer: 4 * 1024 * 1024 },
-  );
+  return execFileSync(executable, [...FIRMWARE_PATHS, DRIVE_ROM.cachePath, diskPath, scenario], {
+    encoding: 'utf8',
+    maxBuffer: 4 * 1024 * 1024,
+  });
 }
 
 async function main(): Promise<void> {
@@ -256,7 +255,7 @@ async function main(): Promise<void> {
   ) {
     throw new Error(
       `Rust 1541 clock is not synchronized: elapsed=${report.drive_elapsed_cycles}, ` +
-      `target=${report.drive_target_cycles}, lead=${report.drive_lead_cycles}.`,
+        `target=${report.drive_target_cycles}, lead=${report.drive_lead_cycles}.`,
     );
   }
 
@@ -286,7 +285,9 @@ async function main(): Promise<void> {
     loadReport.loaded_file_sha256 !==
     '3d992332728ed415b0958b719f3cd1be4410e28da5719c70ce5e51a8e4926063'
   ) {
-    throw new Error(`Rust 1541 LOAD returned unexpected PRG SHA-256 ${loadReport.loaded_file_sha256}.`);
+    throw new Error(
+      `Rust 1541 LOAD returned unexpected PRG SHA-256 ${loadReport.loaded_file_sha256}.`,
+    );
   }
   if (
     loadReport.drive_lead_cycles !== 0 ||
@@ -294,7 +295,7 @@ async function main(): Promise<void> {
   ) {
     throw new Error(
       `Rust 1541 clock is not synchronized after LOAD: elapsed=${loadReport.drive_elapsed_cycles}, ` +
-      `target=${loadReport.drive_target_cycles}, lead=${loadReport.drive_lead_cycles}.`,
+        `target=${loadReport.drive_target_cycles}, lead=${loadReport.drive_lead_cycles}.`,
     );
   }
 
@@ -342,7 +343,7 @@ async function main(): Promise<void> {
     throw new Error(
       `Rust 1541 clock is not synchronized after SAVE/LOAD: ` +
         `elapsed=${saveReport.drive_elapsed_cycles}, target=${saveReport.drive_target_cycles}, ` +
-      `lead=${saveReport.drive_lead_cycles}.`,
+        `lead=${saveReport.drive_lead_cycles}.`,
     );
   }
 

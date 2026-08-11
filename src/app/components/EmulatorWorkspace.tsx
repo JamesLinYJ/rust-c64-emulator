@@ -9,7 +9,7 @@
 // --------------------------------------------------------------------------
 
 import { RefreshCw, Volume2, VolumeX } from 'lucide-react';
-import { useState, type CSSProperties, type PointerEvent, type RefObject } from 'react';
+import { useState, type CSSProperties, type FormEvent, type RefObject } from 'react';
 
 import type { EmulatorPhase, MessageTone } from '../useC64Emulator';
 import type { WebAudioOutputStatus } from '../../platform/WebAudioOutput';
@@ -28,6 +28,7 @@ interface EmulatorWorkspaceProps {
   readonly canvasRef: RefObject<HTMLCanvasElement | null>;
   readonly displayScale: DisplayScale;
   readonly framesPerSecond: number | undefined;
+  readonly keyboardInputRef: RefObject<HTMLTextAreaElement | null>;
   readonly message: string;
   readonly messageTone: MessageTone;
   readonly overBudgetFrames: number;
@@ -49,8 +50,12 @@ const PHASE_LABELS: Readonly<Record<EmulatorPhase, string>> = {
   running: '就绪',
 };
 
-function focusScreen(event: PointerEvent<HTMLDivElement>): void {
-  event.currentTarget.focus();
+function focusKeyboardInput(keyboardInputRef: RefObject<HTMLTextAreaElement | null>): void {
+  keyboardInputRef.current?.focus({ preventScroll: true });
+}
+
+function clearKeyboardInput(event: FormEvent<HTMLTextAreaElement>): void {
+  event.currentTarget.value = '';
 }
 
 function AudioStatusControl({
@@ -100,6 +105,7 @@ export function EmulatorWorkspace({
   canvasRef,
   displayScale,
   framesPerSecond,
+  keyboardInputRef,
   message,
   messageTone,
   overBudgetFrames,
@@ -155,14 +161,27 @@ export function EmulatorWorkspace({
         <div
           ref={screenFrameRef}
           className="screen-frame"
-          tabIndex={0}
           aria-label="C64 屏幕，聚焦后可使用键盘"
           aria-describedby="c64-screen-help"
           aria-busy={phase === 'loading'}
           onBlur={() => setScreenFocused(false)}
           onFocus={() => setScreenFocused(true)}
-          onPointerDown={focusScreen}
+          onPointerDown={() => focusKeyboardInput(keyboardInputRef)}
         >
+          <textarea
+            ref={keyboardInputRef}
+            className="c64-keyboard-capture"
+            aria-label="C64 键盘输入"
+            aria-describedby="c64-screen-help"
+            autoCapitalize="none"
+            autoComplete="off"
+            autoCorrect="off"
+            enterKeyHint="enter"
+            inputMode="text"
+            onInput={clearKeyboardInput}
+            rows={1}
+            spellCheck={false}
+          />
           <div
             className={`screen-host screen-host--${displayScale === 'fit' ? 'fit' : 'fixed'}`}
             style={screenStyle}

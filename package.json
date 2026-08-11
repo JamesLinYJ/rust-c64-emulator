@@ -12,7 +12,9 @@
   "author": "JamesLinYJ",
   "scripts": {
     "dev": "vite",
-    "build": "npm run wasm:build:web && tsc -b && vite build && node --import tsx tools/packageSitesBuild.ts",
+    "build": "tsc -b && vite build",
+    "build:site": "npm run wasm:build:web && npm run build && npm run package:site",
+    "package:site": "node --import tsx tools/packageSitesBuild.ts",
     "preview": "vite preview",
     "typecheck": "tsc -b --pretty false",
     "lint": "eslint . --max-warnings 0",

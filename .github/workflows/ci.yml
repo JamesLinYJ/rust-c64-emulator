@@ -98,6 +98,9 @@ jobs:
       - name: Build and verify browser and Node WebAssembly packages
         run: npm run verify:wasm
 
+      - name: Build and verify Sites production package
+        run: npm run build && npm run package:site
+
   browser:
     name: Chromium production smoke test
     runs-on: ubuntu-latest
