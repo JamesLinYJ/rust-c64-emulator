@@ -170,6 +170,18 @@ impl Drive1541DiskVia {
         mechanism: &mut Drive1541Mechanism,
     ) -> Result<bool, Drive1541DiskViaError> {
         mechanism.tick(1)?;
+        self.clock_via_cycle(mechanism)
+    }
+
+    /// Advance VIA2 only, after the owning machine has clocked the mechanism.
+    ///
+    /// # Errors
+    ///
+    /// Propagates mechanism errors raised while settling changed pins.
+    pub fn clock_via_cycle(
+        &mut self,
+        mechanism: &mut Drive1541Mechanism,
+    ) -> Result<bool, Drive1541DiskViaError> {
         self.synchronize_and_settle(mechanism)?;
         self.via.clock_cycle();
         self.apply_changed_outputs(mechanism)?;

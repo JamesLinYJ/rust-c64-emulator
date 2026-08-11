@@ -114,6 +114,21 @@ impl Drive1541Memory {
         self.data_bus_value
     }
 
+    /// Clock VIA1 followed by VIA2 after the mechanism phase for this cycle.
+    ///
+    /// # Errors
+    ///
+    /// Propagates disk-side VIA board errors.
+    pub fn clock_peripherals(
+        &mut self,
+        iec_bus: &mut IecBus,
+        mechanism: &mut Drive1541Mechanism,
+    ) -> Result<bool, Drive1541MemoryError> {
+        let iec_interrupt = self.iec_via.clock_cycle(iec_bus);
+        let disk_interrupt = self.disk_via.clock_via_cycle(mechanism)?;
+        Ok(iec_interrupt || disk_interrupt)
+    }
+
     /// Read one decoded CPU byte cycle.
     ///
     /// # Errors

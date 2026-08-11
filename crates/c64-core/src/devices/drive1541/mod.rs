@@ -12,5 +12,6 @@ pub mod d64_gcr;
 pub mod disk_via;
 pub mod gcr;
 pub mod iec_via;
+pub mod machine;
 pub mod mechanism;
 pub mod memory;
