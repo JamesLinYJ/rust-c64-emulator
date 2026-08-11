@@ -15,7 +15,7 @@ use crate::media::tap::{TapImage, TapImageError, TapPulse, WritableTapImage};
 const TAP_EXTENDED_PULSE_THRESHOLD_CYCLES: u64 = 0xff * 8 + 7;
 const TAP_SHORT_PULSE_CYCLE_QUANTUM: u64 = 8;
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, wincode::SchemaRead, wincode::SchemaWrite)]
 pub struct DatasetteHostSignals {
     pub motor_active: bool,
     pub write_high: bool,
@@ -30,7 +30,7 @@ impl Default for DatasetteHostSignals {
     }
 }
 
-#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, wincode::SchemaRead, wincode::SchemaWrite)]
 pub enum DatasetteTransport {
     #[default]
     Stopped,
@@ -53,7 +53,7 @@ pub struct DatasetteClockResult {
     pub read_pulses: u64,
 }
 
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq, wincode::SchemaRead, wincode::SchemaWrite)]
 pub enum DatasetteTape {
     ReadOnly(TapImage),
     Writable(WritableTapImage),
@@ -105,7 +105,7 @@ impl DatasetteTape {
     }
 }
 
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq, wincode::SchemaRead, wincode::SchemaWrite)]
 pub enum DatasetteError {
     InvalidTargetClock(u32),
     TapeAlreadyInserted,
@@ -167,7 +167,7 @@ impl From<TapImageError> for DatasetteError {
 
 /// Cycle-clocked C1530 transport. Physical port signals are represented as
 /// values and events so the hot path does not allocate observer callbacks.
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq, wincode::SchemaRead, wincode::SchemaWrite)]
 pub struct Commodore1530Datasette {
     elapsed_target_cycles: u64,
     host_signals: DatasetteHostSignals,

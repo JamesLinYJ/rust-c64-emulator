@@ -76,7 +76,7 @@ impl VicBadLineCycle {
     }
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, wincode::SchemaRead, wincode::SchemaWrite)]
 pub struct VicBadLineController {
     timing: VicTiming,
     state_flags: u8,

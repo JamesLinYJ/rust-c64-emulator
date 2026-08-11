@@ -94,14 +94,14 @@ const STATE_COUNT_PIN_HIGH: u8 = 1 << 3;
 const STATE_FLAG_PIN_HIGH: u8 = 1 << 4;
 const STATE_PORT_CONTROL_OUTPUT_HIGH: u8 = 1 << 5;
 
-#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, wincode::SchemaRead, wincode::SchemaWrite)]
 pub enum Mos6526Model {
     #[default]
     Original,
     Revised,
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, wincode::SchemaRead, wincode::SchemaWrite)]
 pub struct Mos6526Timing {
     pub processor_clock_hz: u32,
     pub time_of_day_input_hz: u32,
@@ -143,7 +143,7 @@ impl std::error::Error for Mos6526TimingError {}
 /// MOS 6526 core independent of board-specific keyboard, joystick, IEC and VIC wiring.
 /// External port levels are supplied on reads; all other state is deterministic and
 /// owned here, including the original/revised interrupt pipeline distinction.
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq, wincode::SchemaRead, wincode::SchemaWrite)]
 pub struct Mos6526 {
     registers: [u8; REGISTER_COUNT],
     timer_a: Mos6526Timer,

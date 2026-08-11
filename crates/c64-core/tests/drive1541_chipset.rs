@@ -245,10 +245,11 @@ fn c64_core_scheduler_advances_the_attached_drive_without_a_fallback() {
 }
 
 #[test]
-fn core_reinitialization_retains_drive_configuration_but_resets_unserialized_hardware() {
+fn full_state_restores_drive_hardware_after_core_reinitialization() {
     let mut core = C64Core::new(CoreConfig::default());
     core.attach_drive1541(9, &drive_rom(&[0xea])).unwrap();
     core.run_cpu_slots(20).unwrap();
+    let expected_drive = core.devices().drive1541().unwrap().clone();
     let state = core.save_state();
 
     core.power_cycle_with_profile(MachineProfile::VmEnhanced)
@@ -260,6 +261,5 @@ fn core_reinitialization_retains_drive_configuration_but_resets_unserialized_har
     core.run_cpu_slots(8).unwrap();
     core.load_state(&state).unwrap();
     let drive = core.devices().drive1541().unwrap();
-    assert_eq!(drive.device_number(), 9);
-    assert_eq!(drive.machine().elapsed_cycles(), 0);
+    assert_eq!(drive, &expected_drive);
 }

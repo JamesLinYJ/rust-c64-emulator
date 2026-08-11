@@ -33,7 +33,7 @@ const STATE_BYTE_READY_ENABLED: u8 = 1 << 1;
 const STATE_FLUX_HIGH: u8 = 1 << 2;
 const STATE_ACCEPTED_FLUX_HIGH: u8 = 1 << 3;
 
-#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, wincode::SchemaRead, wincode::SchemaWrite)]
 #[repr(u8)]
 pub enum Drive1541SpeedZone {
     #[default]
@@ -104,7 +104,7 @@ pub trait Drive1541GcrSignals {
 
 /// Cycle-exact UE7/UF4 divider, flux filter, ten-bit sync detector and UE3
 /// byte counter. The state contains no host pointers and is deterministic.
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq, wincode::SchemaRead, wincode::SchemaWrite)]
 pub struct Drive1541GcrCircuit {
     speed_zone: Drive1541SpeedZone,
     state_flags: u8,

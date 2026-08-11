@@ -112,7 +112,7 @@ impl From<VicError> for C64ChipsetError {
 }
 
 /// 主板级芯片接线。尚未迁移的扩展范围保持明确 open bus，不存在 TypeScript fallback。
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq, wincode::SchemaRead, wincode::SchemaWrite)]
 pub struct C64Chipset {
     video_standard: VideoStandard,
     irq_cia: Mos6526,
@@ -262,6 +262,22 @@ impl C64Chipset {
 
     pub const fn reu_mut(&mut self) -> Option<&mut RamExpansionUnit> {
         self.reu.as_mut()
+    }
+
+    pub(crate) fn state_matches_config(
+        &self,
+        video_standard: VideoStandard,
+        sid_model: SidModel,
+    ) -> bool {
+        self.video_standard == video_standard
+            && self.sid.model() == sid_model
+            && self.sid.processor_clock_hz() == video_standard.system_clock_hz()
+            && self.sid.state_is_valid()
+            && self.datasette.target_clock_hz() == video_standard.system_clock_hz()
+            && self
+                .reu
+                .as_ref()
+                .is_none_or(RamExpansionUnit::state_is_valid)
     }
 
     /// Attach one fully validated cartridge to the expansion port.

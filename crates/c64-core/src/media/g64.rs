@@ -23,7 +23,7 @@ const G64_TRACK_ENTRY_SIZE: usize = 4;
 const G64_TRACK_OFFSET_TABLE_OFFSET: usize = 12;
 const G64_VERSION_OFFSET: usize = 8;
 
-#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, wincode::SchemaRead, wincode::SchemaWrite)]
 #[repr(u8)]
 pub enum G64SpeedZone {
     #[default]
@@ -55,13 +55,13 @@ impl TryFrom<u8> for G64SpeedZone {
     }
 }
 
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq, wincode::SchemaRead, wincode::SchemaWrite)]
 pub enum G64SpeedMap {
     Constant(G64SpeedZone),
     Variable(Vec<u8>),
 }
 
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq, wincode::SchemaRead, wincode::SchemaWrite)]
 pub struct G64HalfTrack {
     bytes: Vec<u8>,
     half_track: u8,
@@ -251,7 +251,7 @@ impl std::error::Error for G64ImageError {}
 
 /// Owns the raw GCR byte stream and speed metadata for every represented
 /// physical half-track. File offsets are validated before any allocation.
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq, wincode::SchemaRead, wincode::SchemaWrite)]
 pub struct G64DiskImage {
     half_track_count: u8,
     maximum_track_length: usize,

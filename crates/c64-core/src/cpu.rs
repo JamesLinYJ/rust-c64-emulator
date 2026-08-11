@@ -23,7 +23,7 @@ pub const CPU_STATUS_UNUSED: u8 = 0x20;
 pub const CPU_STATUS_OVERFLOW: u8 = 0x40;
 pub const CPU_STATUS_NEGATIVE: u8 = 0x80;
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, wincode::SchemaRead, wincode::SchemaWrite)]
 pub struct Cpu6510State {
     pub accumulator: u8,
     pub index_x: u8,

@@ -62,7 +62,7 @@ const MOS8580_TIMING: SidOscillatorTiming = SidOscillatorTiming {
 };
 
 /// 单声部 24 位相位累加器、噪声 LFSR 以及 MOS 6581/8580 数字波形通路。
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq, wincode::SchemaRead, wincode::SchemaWrite)]
 pub struct SidOscillator {
     accumulator: u32,
     frequency_register: u16,

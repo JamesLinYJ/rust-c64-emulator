@@ -12,14 +12,14 @@ pub const BASE_RAM_BYTES: usize = 65_536;
 pub const PAGE_BYTES: usize = 256;
 pub const BASE_PAGE_COUNT: usize = BASE_RAM_BYTES / PAGE_BYTES;
 
-#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, wincode::SchemaRead, wincode::SchemaWrite)]
 pub enum PageDomain {
     #[default]
     Fast,
     BusBridge,
 }
 
-#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, wincode::SchemaRead, wincode::SchemaWrite)]
 pub enum PhysicalTarget {
     #[default]
     BaseRam,
@@ -38,7 +38,7 @@ pub enum PhysicalTarget {
     OpenBus,
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, wincode::SchemaRead, wincode::SchemaWrite)]
 pub struct PageDescriptor {
     pub domain: PageDomain,
     pub target: PhysicalTarget,
@@ -69,7 +69,7 @@ impl PageDescriptor {
     }
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, wincode::SchemaRead, wincode::SchemaWrite)]
 struct PageMetadata {
     read_descriptor: PageDescriptor,
     write_descriptor: PageDescriptor,
@@ -92,7 +92,7 @@ pub enum MemoryWriteSource {
     HostLoader,
 }
 
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq, wincode::SchemaRead, wincode::SchemaWrite)]
 pub struct CoherentMemory {
     base_ram: Box<[u8; BASE_RAM_BYTES]>,
     pages: [PageMetadata; BASE_PAGE_COUNT],
@@ -221,10 +221,6 @@ impl CoherentMemory {
 
     pub fn base_ram(&self) -> &[u8; BASE_RAM_BYTES] {
         &self.base_ram
-    }
-
-    pub(crate) fn clone_base_ram(&self) -> Box<[u8; BASE_RAM_BYTES]> {
-        self.base_ram.clone()
     }
 
     pub(crate) fn restore_base_ram(&mut self, ram: &[u8]) {

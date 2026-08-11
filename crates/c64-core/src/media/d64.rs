@@ -18,7 +18,7 @@ const DIRECTORY_HEADER_SECTOR: u8 = 0;
 const DIRECTORY_DISK_ID_1_OFFSET: usize = 0xa2;
 const DIRECTORY_DISK_ID_2_OFFSET: usize = 0xa3;
 
-#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, wincode::SchemaRead, wincode::SchemaWrite)]
 #[repr(u8)]
 pub enum D64ErrorCode {
     #[default]
@@ -101,7 +101,7 @@ impl fmt::Display for D64ImageError {
 
 impl std::error::Error for D64ImageError {}
 
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq, wincode::SchemaRead, wincode::SchemaWrite)]
 pub struct D64DiskImage {
     sector_data: Vec<u8>,
     error_info: Vec<D64ErrorCode>,

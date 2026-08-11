@@ -84,7 +84,7 @@ impl IecBusTransition {
     }
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, wincode::SchemaRead, wincode::SchemaWrite)]
 pub struct IecPort {
     slot: u8,
     generation: u32,
@@ -110,7 +110,7 @@ impl std::error::Error for IecBusError {}
 /// Allocation-free open-collector IEC fabric. A port can only pull lines low;
 /// the combined state is the OR of all driver masks and is therefore independent
 /// of update order.
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq, wincode::SchemaRead, wincode::SchemaWrite)]
 pub struct IecBus {
     driver_masks: [u8; MAXIMUM_IEC_PORTS],
     port_generations: [u32; MAXIMUM_IEC_PORTS],

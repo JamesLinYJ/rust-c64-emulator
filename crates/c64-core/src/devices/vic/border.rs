@@ -31,7 +31,7 @@ pub struct VicBorderSignals {
 }
 
 /// PAL 6569 的垂直、主边框触发器，以及 38 列模式下跨八像素组的输出锁存。
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, wincode::SchemaRead, wincode::SchemaWrite)]
 pub struct VicBorderController {
     timing: VicTiming,
     state: u8,

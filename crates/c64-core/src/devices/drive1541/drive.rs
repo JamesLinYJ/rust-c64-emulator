@@ -83,7 +83,7 @@ impl From<Drive1541MemoryError> for Commodore1541DriveError {
 
 /// Owns one independent 1541 and its integer adapter to the C64 clock domain.
 /// The shared IEC bus remains borrowed only for individual transactions.
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq, wincode::SchemaRead, wincode::SchemaWrite)]
 pub struct Commodore1541Drive {
     device_number: u8,
     machine: Drive1541Machine,

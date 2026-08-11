@@ -49,7 +49,7 @@ impl From<IecBusError> for Drive1541IecViaError {
     }
 }
 
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq, wincode::SchemaRead, wincode::SchemaWrite)]
 pub struct Drive1541IecVia {
     via: Mos6522,
     device_number: u8,

@@ -15,7 +15,7 @@ use crate::devices::sid::SidModel;
 pub const MINIMUM_TURBO_SLOTS: u8 = 2;
 pub const MAXIMUM_TURBO_SLOTS: u8 = 64;
 
-#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, wincode::SchemaRead, wincode::SchemaWrite)]
 #[repr(u8)]
 pub enum MachineProfile {
     #[default]
@@ -43,7 +43,7 @@ impl MachineProfile {
     }
 }
 
-#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, wincode::SchemaRead, wincode::SchemaWrite)]
 #[repr(u8)]
 pub enum VideoStandard {
     #[default]
@@ -78,7 +78,7 @@ impl VideoStandard {
     }
 }
 
-#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, wincode::SchemaRead, wincode::SchemaWrite)]
 #[repr(u8)]
 pub enum PacingMode {
     #[default]
@@ -103,7 +103,9 @@ impl PacingMode {
     }
 }
 
-#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
+#[derive(
+    Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd, wincode::SchemaRead, wincode::SchemaWrite,
+)]
 pub struct SlotsPerSystemCycle(u8);
 
 impl SlotsPerSystemCycle {
@@ -130,7 +132,7 @@ impl SlotsPerSystemCycle {
     }
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, wincode::SchemaRead, wincode::SchemaWrite)]
 pub enum TurboSpeedRequest {
     Manual(SlotsPerSystemCycle),
     Auto { maximum: SlotsPerSystemCycle },
@@ -162,14 +164,14 @@ impl TurboSpeedRequest {
     }
 }
 
-#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, wincode::SchemaRead, wincode::SchemaWrite)]
 pub enum ExecutionRequest {
     #[default]
     Strict,
     Turbo(TurboSpeedRequest),
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, wincode::SchemaRead, wincode::SchemaWrite)]
 pub struct CoreConfig {
     pub profile: MachineProfile,
     pub video_standard: VideoStandard,
@@ -188,7 +190,7 @@ impl Default for CoreConfig {
     }
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, wincode::SchemaRead, wincode::SchemaWrite)]
 pub struct ExecutionStatus {
     pub requested: ExecutionRequest,
     pub effective_slots: SlotsPerSystemCycle,
@@ -201,7 +203,7 @@ impl ExecutionStatus {
     }
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, wincode::SchemaRead, wincode::SchemaWrite)]
 pub struct ExecutionController {
     status: ExecutionStatus,
 }
@@ -225,6 +227,31 @@ impl ExecutionController {
 
     pub const fn status(self) -> ExecutionStatus {
         self.status
+    }
+
+    pub(crate) const fn state_is_valid(self) -> bool {
+        let effective = self.status.effective_slots.get();
+        match self.status.requested {
+            ExecutionRequest::Strict => {
+                effective == SlotsPerSystemCycle::STRICT.get()
+                    && !self.status.awaiting_auto_calibration
+            }
+            ExecutionRequest::Turbo(TurboSpeedRequest::Manual(requested)) => {
+                requested.get() >= MINIMUM_TURBO_SLOTS
+                    && requested.get() <= MAXIMUM_TURBO_SLOTS
+                    && effective == requested.get()
+                    && !self.status.awaiting_auto_calibration
+            }
+            ExecutionRequest::Turbo(TurboSpeedRequest::Auto { maximum }) => {
+                maximum.get() >= MINIMUM_TURBO_SLOTS
+                    && maximum.get() <= MAXIMUM_TURBO_SLOTS
+                    && if self.status.awaiting_auto_calibration {
+                        effective == SlotsPerSystemCycle::STRICT.get()
+                    } else {
+                        effective >= SlotsPerSystemCycle::STRICT.get() && effective <= maximum.get()
+                    }
+            }
+        }
     }
 
     pub fn request(&mut self, request: ExecutionRequest) {

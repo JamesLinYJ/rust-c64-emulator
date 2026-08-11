@@ -63,7 +63,7 @@ pub struct SidVoiceState {
 
 /// Cycle-clocked SID including digital voices, analog filters, readable bus
 /// behavior and a fixed-capacity resampled PCM queue.
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq, wincode::SchemaRead, wincode::SchemaWrite)]
 pub struct Sid {
     registers: [u8; SID_REGISTER_COUNT],
     voices: [SidVoice; SID_VOICE_COUNT],
@@ -167,6 +167,17 @@ impl Sid {
 
     pub const fn pending_sample_count(&self) -> usize {
         self.samples.len()
+    }
+
+    pub(crate) fn state_is_valid(&self) -> bool {
+        self.processor_clock_hz > 0
+            && self.sample_rate_hz > 0
+            && self.sample_rate_hz <= self.processor_clock_hz
+            && self.filter.model() == self.model
+            && self.voices.iter().all(|voice| voice.model() == self.model)
+            && self.resampler.input_rate_hz() == self.processor_clock_hz
+            && self.resampler.output_rate_hz() == self.sample_rate_hz
+            && self.samples.state_is_valid(SID_SAMPLE_BUFFER_CAPACITY)
     }
 
     pub fn voice_state(&self, voice: usize) -> Option<SidVoiceState> {

@@ -12,7 +12,7 @@ const PULL_UP_MASK: u8 = 0x17;
 const FLOATING_PIN_MASK: u8 = 0xc0;
 const DEFAULT_FLOATING_PIN_FALL_OFF_CYCLES: u32 = 350_000;
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, wincode::SchemaRead, wincode::SchemaWrite)]
 pub struct ProcessorPortOutputState {
     pub direction: u8,
     pub output_latch: u8,
@@ -25,7 +25,7 @@ pub struct ProcessorPortInputState {
     pub value: u8,
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, wincode::SchemaRead, wincode::SchemaWrite)]
 pub struct ProcessorPort6510 {
     direction: u8,
     output: u8,

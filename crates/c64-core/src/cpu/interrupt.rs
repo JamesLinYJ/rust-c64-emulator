@@ -14,7 +14,7 @@ const NORMAL_RECOGNITION_CYCLES: u64 = 2;
 const BRANCH_RECOGNITION_CYCLES: u64 = 3;
 const IRQ_DEASSERTION_HOLD_CYCLES: u64 = 3;
 
-#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, wincode::SchemaRead, wincode::SchemaWrite)]
 enum InterruptMaskTransition {
     #[default]
     Unchanged,
@@ -27,7 +27,7 @@ enum InterruptMaskTransition {
 /// Physical IRQ/NMI line state remains the machine scheduler's responsibility.
 /// This value only models the CPU-internal I-flag delay, the extra recognition
 /// cycle after a taken branch, and BRK's shared interrupt-entry semantics.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, wincode::SchemaRead, wincode::SchemaWrite)]
 pub struct CpuInterruptTiming {
     current_instruction_delays_interrupt: bool,
     previous_instruction_delays_interrupt: bool,
@@ -122,7 +122,7 @@ impl CpuInterruptTiming {
 }
 
 /// Low-active IRQ input latch including the NMOS pulse recognition window.
-#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, wincode::SchemaRead, wincode::SchemaWrite)]
 pub struct CpuIrqLine {
     asserted: bool,
     asserted_at_cycle: Option<u64>,
@@ -194,7 +194,7 @@ impl CpuIrqLine {
 
 /// Edge-sensitive NMI latch. A held physical level cannot retrigger until it
 /// first becomes inactive and then asserts again.
-#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, wincode::SchemaRead, wincode::SchemaWrite)]
 pub struct CpuNmiLine {
     asserted: bool,
     edge_at_cycle: Option<u64>,

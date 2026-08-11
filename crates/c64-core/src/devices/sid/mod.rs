@@ -32,7 +32,7 @@ pub use oscillator::SidOscillator;
 pub use resampler::{SidAudioResampler, SidResamplerConfigError};
 pub use voice::SidVoice;
 
-#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, wincode::SchemaRead, wincode::SchemaWrite)]
 pub enum SidModel {
     #[default]
     Mos6581,

@@ -95,7 +95,7 @@ impl VicCycleResult {
     }
 }
 
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq, wincode::SchemaRead, wincode::SchemaWrite)]
 pub struct VicCycleSequencer {
     bad_line_controller: VicBadLineController,
     sprite_dma: [VicSpriteDma; SPRITE_COUNT as usize],

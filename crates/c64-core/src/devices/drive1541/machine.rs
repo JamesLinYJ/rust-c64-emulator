@@ -59,7 +59,7 @@ impl From<Drive1541MemoryError> for Drive1541MachineError {
 }
 
 /// Owns the drive CPU, decoder and mechanism in one monotonic 1 MHz domain.
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq, wincode::SchemaRead, wincode::SchemaWrite)]
 pub struct Drive1541Machine {
     cpu: Cpu6510,
     memory: Drive1541Memory,

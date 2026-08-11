@@ -15,7 +15,7 @@ const MOS8580_WAVEFORM_DAC_ZERO: i32 = 0x09e0;
 
 /// One SID voice, combining the digital oscillator, ADSR generator and
 /// model-specific waveform DAC zero level.
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq, wincode::SchemaRead, wincode::SchemaWrite)]
 pub struct SidVoice {
     attack_decay_register: u8,
     sustain_release_register: u8,

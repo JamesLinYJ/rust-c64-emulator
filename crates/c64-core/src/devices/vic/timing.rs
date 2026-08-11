@@ -8,7 +8,7 @@
 //   Author:     OpenAI Codex
 // --------------------------------------------------------------------------
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, wincode::SchemaRead, wincode::SchemaWrite)]
 pub struct VicBadLineTiming {
     pub ba_first_cycle: u8,
     pub ba_last_cycle: u8,
@@ -16,7 +16,7 @@ pub struct VicBadLineTiming {
     pub last_raster_line: u16,
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, wincode::SchemaRead, wincode::SchemaWrite)]
 pub struct VicBorderTiming {
     pub reduced_column_left_cycle: u8,
     pub reduced_column_right_cycle: u8,
@@ -28,7 +28,7 @@ pub struct VicBorderTiming {
     pub standard_row_stop_line: u16,
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, wincode::SchemaRead, wincode::SchemaWrite)]
 pub struct VicFetchTiming {
     pub graphics_first_cycle: u8,
     pub graphics_last_cycle: u8,
@@ -42,7 +42,7 @@ pub struct VicFetchTiming {
     pub video_counter_reload_cycle: u8,
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, wincode::SchemaRead, wincode::SchemaWrite)]
 pub struct VicLightPenTiming {
     pub horizontal_counter_granularity_pixels: u16,
     pub horizontal_origin_pixels: u16,
@@ -51,7 +51,7 @@ pub struct VicLightPenTiming {
     pub trigger_delay_cycles: u8,
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, wincode::SchemaRead, wincode::SchemaWrite)]
 pub struct VicSpriteTiming {
     pub ba_cycle_count: u8,
     pub ba_first_cycle: u8,
@@ -66,7 +66,7 @@ pub struct VicSpriteTiming {
     pub start_cycle_spacing: u8,
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, wincode::SchemaRead, wincode::SchemaWrite)]
 pub struct VicTiming {
     pub bad_line: VicBadLineTiming,
     pub border: VicBorderTiming,

@@ -27,7 +27,7 @@ use crate::{
     },
     media::tap::{TapImage, TapImageError, TapVideoStandard, WritableTapImage},
     memory::{CoherentMemory, MemoryWriteSource},
-    state::{self, StateError, StateImage},
+    state::{self, DecodedState, StateError},
 };
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -66,7 +66,7 @@ impl CoreDiagnostics {
     }
 }
 
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq, wincode::SchemaRead, wincode::SchemaWrite)]
 pub struct C64Core {
     config: CoreConfig,
     execution: ExecutionController,
@@ -76,6 +76,7 @@ pub struct C64Core {
     devices: C64Chipset,
     irq_line: CpuIrqLine,
     nmi_line: CpuNmiLine,
+    #[wincode(skip)]
     diagnostics: CoreDiagnostics,
 }
 
@@ -729,36 +730,77 @@ impl C64Core {
     }
 
     pub fn save_state(&self) -> Vec<u8> {
-        state::encode(&StateImage {
-            config: self.config,
-            execution: self.execution,
-            timestamp: self.clock.timestamp(),
-            cpu: self.cpu.state(),
-            base_ram: self.address_space.clone_base_ram(),
-        })
+        state::encode(self)
     }
 
     /// 原子载入一个经过完整验证的版本化架构状态。
     ///
     /// # Errors
     ///
-    /// 头部、版本、section、配置、时钟状态或外设复位无效时返回错误。
+    /// 头部、版本、校验和、编码负载或恢复后的硬件状态无效时返回错误。
     pub fn load_state(&mut self, bytes: &[u8]) -> Result<(), CoreError> {
-        let image = state::decode(bytes)?;
-        let mut address_space = C64AddressSpace::new(self.address_space.firmware().clone());
-        address_space.restore_base_ram(image.base_ram.as_ref());
-        let mut devices = self.devices.clone();
-        devices.reinitialize_host(image.config.video_standard, image.config.sid_model)?;
-        self.config = image.config;
-        self.execution = image.execution;
-        self.clock
-            .restore(image.timestamp, image.execution.status().effective_slots);
-        self.cpu.restore_state(image.cpu);
-        self.address_space = address_space;
-        self.devices = devices;
-        self.irq_line.reset();
-        self.nmi_line.reset();
-        self.diagnostics.state_loads = self.diagnostics.state_loads.wrapping_add(1);
+        match state::decode(bytes)? {
+            DecodedState::Full(mut restored) => {
+                restored.validate_loaded_state()?;
+                restored
+                    .address_space
+                    .replace_firmware(self.address_space.firmware().clone());
+                restored.diagnostics = self.diagnostics;
+                restored.diagnostics.state_loads = restored.diagnostics.state_loads.wrapping_add(1);
+                *self = *restored;
+            }
+            DecodedState::Legacy(image) => {
+                let mut address_space = C64AddressSpace::new(self.address_space.firmware().clone());
+                address_space.restore_base_ram(image.base_ram.as_ref());
+                let mut devices = self.devices.clone();
+                devices.reinitialize_host(image.config.video_standard, image.config.sid_model)?;
+                self.config = image.config;
+                self.execution = image.execution;
+                self.clock
+                    .restore(image.timestamp, image.execution.status().effective_slots);
+                self.cpu.restore_state(image.cpu);
+                self.address_space = address_space;
+                self.devices = devices;
+                self.irq_line.reset();
+                self.nmi_line.reset();
+                self.diagnostics.state_loads = self.diagnostics.state_loads.wrapping_add(1);
+            }
+        }
+        Ok(())
+    }
+
+    fn validate_loaded_state(&self) -> Result<(), StateError> {
+        if !self.execution.state_is_valid() {
+            return Err(StateError::InvalidState(
+                "execution request and effective slot count are inconsistent",
+            ));
+        }
+        let effective_slots = self.execution.status().effective_slots;
+        if self.clock.slots_per_system_cycle() != effective_slots {
+            return Err(StateError::InvalidState(
+                "virtual clock and execution controller use different slot counts",
+            ));
+        }
+        let timestamp = self.clock.timestamp();
+        if timestamp.slot >= effective_slots.get() {
+            return Err(StateError::InvalidClockSlot {
+                slot: timestamp.slot,
+                slots_per_system_cycle: effective_slots.get(),
+            });
+        }
+        if !self.address_space.state_is_valid() {
+            return Err(StateError::InvalidState(
+                "address-space storage has an invalid physical size",
+            ));
+        }
+        if !self
+            .devices
+            .state_matches_config(self.config.video_standard, self.config.sid_model)
+        {
+            return Err(StateError::InvalidState(
+                "chipset state does not match the saved machine configuration",
+            ));
+        }
         Ok(())
     }
 

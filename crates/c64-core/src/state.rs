@@ -18,11 +18,16 @@ use crate::{
     clock::VirtualTimestamp,
     cpu::Cpu6510State,
     devices::sid::SidModel,
+    machine::C64Core,
     memory::BASE_RAM_BYTES,
 };
 
-const SAVE_STATE_MAGIC: [u8; 8] = *b"RC64VM01";
-pub const SAVE_STATE_FORMAT_VERSION: u16 = 1;
+const LEGACY_SAVE_STATE_MAGIC: [u8; 8] = *b"RC64VM01";
+const SAVE_STATE_MAGIC: [u8; 8] = *b"RC64VM02";
+pub const SAVE_STATE_FORMAT_VERSION: u16 = 2;
+const SAVE_STATE_HEADER_BYTES: usize = 18;
+const MAXIMUM_SAVE_STATE_PAYLOAD_BYTES: usize = 32 * 1024 * 1024;
+#[cfg(test)]
 const SECTION_COUNT: u16 = 4;
 const SECTION_CONFIGURATION: [u8; 4] = *b"CONF";
 const SECTION_TIME: [u8; 4] = *b"TIME";
@@ -30,7 +35,7 @@ const SECTION_CPU: [u8; 4] = *b"CPU0";
 const SECTION_RAM: [u8; 4] = *b"RAM0";
 
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub(crate) struct StateImage {
+pub(crate) struct LegacyStateImage {
     pub config: CoreConfig,
     pub execution: ExecutionController,
     pub timestamp: VirtualTimestamp,
@@ -38,10 +43,39 @@ pub(crate) struct StateImage {
     pub base_ram: Box<[u8; BASE_RAM_BYTES]>,
 }
 
-pub(crate) fn encode(image: &StateImage) -> Vec<u8> {
-    let mut output = Vec::with_capacity(BASE_RAM_BYTES + 96);
+pub(crate) enum DecodedState {
+    Full(Box<C64Core>),
+    Legacy(LegacyStateImage),
+}
+
+pub(crate) fn encode(core: &C64Core) -> Vec<u8> {
+    let config = wincode::config::Configuration::default()
+        .with_preallocation_size_limit::<MAXIMUM_SAVE_STATE_PAYLOAD_BYTES>();
+    let payload = wincode::config::serialize(core, config)
+        .expect("a validated C64 state must fit the save-state codec limits");
+    assert!(
+        payload.len() <= MAXIMUM_SAVE_STATE_PAYLOAD_BYTES,
+        "a C64 save-state must fit the declared payload limit"
+    );
+
+    let mut output = Vec::with_capacity(SAVE_STATE_HEADER_BYTES + payload.len());
     output.extend_from_slice(&SAVE_STATE_MAGIC);
     output.extend_from_slice(&SAVE_STATE_FORMAT_VERSION.to_le_bytes());
+    output.extend_from_slice(
+        &u32::try_from(payload.len())
+            .expect("the bounded save-state payload length must fit u32")
+            .to_le_bytes(),
+    );
+    output.extend_from_slice(&crc32(&payload).to_le_bytes());
+    output.extend_from_slice(&payload);
+    output
+}
+
+#[cfg(test)]
+fn encode_legacy(image: &LegacyStateImage) -> Vec<u8> {
+    let mut output = Vec::with_capacity(BASE_RAM_BYTES + 96);
+    output.extend_from_slice(&LEGACY_SAVE_STATE_MAGIC);
+    output.extend_from_slice(&1_u16.to_le_bytes());
     output.extend_from_slice(&SECTION_COUNT.to_le_bytes());
 
     let status = image.execution.status();
@@ -82,15 +116,67 @@ pub(crate) fn encode(image: &StateImage) -> Vec<u8> {
     output
 }
 
-pub(crate) fn decode(bytes: &[u8]) -> Result<StateImage, StateError> {
-    if bytes.len() < 12 {
+pub(crate) fn decode(bytes: &[u8]) -> Result<DecodedState, StateError> {
+    if bytes.len() < 8 {
         return Err(StateError::TruncatedHeader);
     }
-    if bytes[..8] != SAVE_STATE_MAGIC {
-        return Err(StateError::InvalidMagic);
+    if bytes[..8] == SAVE_STATE_MAGIC {
+        return decode_full(bytes).map(Box::new).map(DecodedState::Full);
+    }
+    if bytes[..8] == LEGACY_SAVE_STATE_MAGIC {
+        return decode_legacy(bytes).map(DecodedState::Legacy);
+    }
+    Err(StateError::InvalidMagic)
+}
+
+fn decode_full(bytes: &[u8]) -> Result<C64Core, StateError> {
+    if bytes.len() < SAVE_STATE_HEADER_BYTES {
+        return Err(StateError::TruncatedHeader);
     }
     let version = u16::from_le_bytes([bytes[8], bytes[9]]);
     if version != SAVE_STATE_FORMAT_VERSION {
+        return Err(StateError::UnsupportedVersion(version));
+    }
+    let payload_length = u32::from_le_bytes([bytes[10], bytes[11], bytes[12], bytes[13]]) as usize;
+    if payload_length > MAXIMUM_SAVE_STATE_PAYLOAD_BYTES {
+        return Err(StateError::PayloadTooLarge {
+            actual: payload_length,
+            maximum: MAXIMUM_SAVE_STATE_PAYLOAD_BYTES,
+        });
+    }
+    let expected_length = SAVE_STATE_HEADER_BYTES
+        .checked_add(payload_length)
+        .ok_or(StateError::PayloadLengthOverflow)?;
+    if bytes.len() != expected_length {
+        return Err(StateError::PayloadLengthMismatch {
+            expected: expected_length,
+            actual: bytes.len(),
+        });
+    }
+    let expected_checksum = u32::from_le_bytes([bytes[14], bytes[15], bytes[16], bytes[17]]);
+    let payload = &bytes[SAVE_STATE_HEADER_BYTES..];
+    let actual_checksum = crc32(payload);
+    if actual_checksum != expected_checksum {
+        return Err(StateError::ChecksumMismatch {
+            expected: expected_checksum,
+            actual: actual_checksum,
+        });
+    }
+    let config = wincode::config::Configuration::default()
+        .with_preallocation_size_limit::<MAXIMUM_SAVE_STATE_PAYLOAD_BYTES>();
+    wincode::config::deserialize_exact(payload, config)
+        .map_err(|error| StateError::Codec(error.to_string()))
+}
+
+fn decode_legacy(bytes: &[u8]) -> Result<LegacyStateImage, StateError> {
+    if bytes.len() < 12 {
+        return Err(StateError::TruncatedHeader);
+    }
+    if bytes[..8] != LEGACY_SAVE_STATE_MAGIC {
+        return Err(StateError::InvalidMagic);
+    }
+    let version = u16::from_le_bytes([bytes[8], bytes[9]]);
+    if version != 1 {
         return Err(StateError::UnsupportedVersion(version));
     }
     let section_count = usize::from(u16::from_le_bytes([bytes[10], bytes[11]]));
@@ -156,7 +242,7 @@ pub(crate) fn decode(bytes: &[u8]) -> Result<StateImage, StateError> {
         .expect("固定 64 KiB RAM 分配必须具有精确长度");
     base_ram.copy_from_slice(ram);
 
-    Ok(StateImage {
+    Ok(LegacyStateImage {
         config,
         execution,
         timestamp,
@@ -165,6 +251,19 @@ pub(crate) fn decode(bytes: &[u8]) -> Result<StateImage, StateError> {
     })
 }
 
+fn crc32(bytes: &[u8]) -> u32 {
+    let mut crc = u32::MAX;
+    for &byte in bytes {
+        crc ^= u32::from(byte);
+        for _ in 0..8 {
+            let mask = 0_u32.wrapping_sub(crc & 1);
+            crc = (crc >> 1) ^ (0xedb8_8320 & mask);
+        }
+    }
+    !crc
+}
+
+#[cfg(test)]
 fn append_section(output: &mut Vec<u8>, tag: [u8; 4], payload: &[u8]) {
     output.extend_from_slice(&tag);
     output.extend_from_slice(
@@ -289,6 +388,21 @@ pub enum StateError {
         slot: u8,
         slots_per_system_cycle: u8,
     },
+    PayloadTooLarge {
+        actual: usize,
+        maximum: usize,
+    },
+    PayloadLengthOverflow,
+    PayloadLengthMismatch {
+        expected: usize,
+        actual: usize,
+    },
+    ChecksumMismatch {
+        expected: u32,
+        actual: u32,
+    },
+    Codec(String),
+    InvalidState(&'static str),
     ExecutionConfiguration(ExecutionConfigError),
 }
 
@@ -335,9 +449,82 @@ impl fmt::Display for StateError {
                 formatter,
                 "虚拟时钟槽位 {slot} 超出每周期 {slots_per_system_cycle} 个槽位的范围",
             ),
+            Self::PayloadTooLarge { actual, maximum } => write!(
+                formatter,
+                "save-state payload 为 {actual} 字节，超过 {maximum} 字节上限",
+            ),
+            Self::PayloadLengthOverflow => formatter.write_str("save-state payload 长度溢出"),
+            Self::PayloadLengthMismatch { expected, actual } => write!(
+                formatter,
+                "save-state 总长度应为 {expected} 字节，实际为 {actual} 字节",
+            ),
+            Self::ChecksumMismatch { expected, actual } => write!(
+                formatter,
+                "save-state CRC32 应为 {expected:#010x}，实际为 {actual:#010x}",
+            ),
+            Self::Codec(error) => write!(formatter, "save-state payload 无效：{error}"),
+            Self::InvalidState(reason) => write!(formatter, "save-state 硬件状态无效：{reason}"),
             Self::ExecutionConfiguration(error) => error.fmt(formatter),
         }
     }
 }
 
 impl std::error::Error for StateError {}
+
+#[cfg(test)]
+mod tests {
+    use crate::{C64Core, MemoryWriteSource};
+
+    use super::*;
+
+    #[test]
+    fn crc32_matches_the_standard_check_value() {
+        assert_eq!(crc32(b"123456789"), 0xcbf4_3926);
+    }
+
+    #[test]
+    fn legacy_v1_images_remain_loadable() {
+        let mut execution = ExecutionController::new();
+        execution.request(ExecutionRequest::Turbo(
+            TurboSpeedRequest::manual(4).unwrap(),
+        ));
+        let mut base_ram: Box<[u8; BASE_RAM_BYTES]> = vec![0; BASE_RAM_BYTES]
+            .into_boxed_slice()
+            .try_into()
+            .unwrap();
+        base_ram[0xc000] = 0x5a;
+        let image = LegacyStateImage {
+            config: CoreConfig::default(),
+            execution,
+            timestamp: VirtualTimestamp {
+                system_cycle: 123,
+                slot: 2,
+            },
+            cpu: Cpu6510State {
+                program_counter: 0x2000,
+                ..Cpu6510State::default()
+            },
+            base_ram,
+        };
+
+        let mut core = C64Core::default();
+        core.write_base_ram(0xc000, 0, MemoryWriteSource::HostLoader);
+        core.load_state(&encode_legacy(&image)).unwrap();
+        assert_eq!(core.config(), image.config);
+        assert_eq!(core.execution_status(), image.execution.status());
+        assert_eq!(core.timestamp(), image.timestamp);
+        assert_eq!(core.cpu_state(), image.cpu);
+        assert_eq!(core.read_base_ram(0xc000), 0x5a);
+    }
+
+    #[test]
+    fn checksummed_noncanonical_payload_is_rejected_by_the_codec() {
+        let mut encoded = encode(&C64Core::default());
+        encoded[SAVE_STATE_HEADER_BYTES..SAVE_STATE_HEADER_BYTES + 4]
+            .copy_from_slice(&u32::MAX.to_le_bytes());
+        let checksum = crc32(&encoded[SAVE_STATE_HEADER_BYTES..]);
+        encoded[14..18].copy_from_slice(&checksum.to_le_bytes());
+
+        assert!(matches!(decode(&encoded), Err(StateError::Codec(_))));
+    }
+}

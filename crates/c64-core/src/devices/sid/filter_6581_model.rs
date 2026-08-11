@@ -92,7 +92,7 @@ struct SplinePoint {
     y: f64,
 }
 
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq, wincode::SchemaRead, wincode::SchemaWrite)]
 pub(crate) struct Sid6581IntegratorState {
     capacitor_voltage: i32,
     op_amp_input: u16,

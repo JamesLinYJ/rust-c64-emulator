@@ -28,7 +28,7 @@ const DEVICE_ID: u8 = 0xa4;
 const STATUS_ERASE_TIMER_EXPIRED: u8 = 1 << 3;
 const STATUS_TIMEOUT: u8 = 1 << 5;
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, wincode::SchemaRead, wincode::SchemaWrite)]
 pub enum Amd29F040BState {
     Read,
     Unlock1,
@@ -46,7 +46,7 @@ pub enum Amd29F040BState {
     ChipEraseBusy,
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, wincode::SchemaRead, wincode::SchemaWrite)]
 enum BaseState {
     Read,
     Autoselect,
@@ -61,7 +61,7 @@ impl BaseState {
     }
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, wincode::SchemaRead, wincode::SchemaWrite)]
 struct PendingByteProgram {
     address: usize,
     value: u8,
@@ -90,7 +90,7 @@ impl fmt::Display for Amd29F040BError {
 
 impl std::error::Error for Amd29F040BError {}
 
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq, wincode::SchemaRead, wincode::SchemaWrite)]
 pub struct Amd29F040BFlash {
     data: Box<[u8]>,
     base_state: BaseState,

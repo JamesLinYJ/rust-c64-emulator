@@ -143,7 +143,7 @@ impl fmt::Display for VicFetchError {
 impl std::error::Error for VicFetchError {}
 
 /// 消费时序器的半周期计划；所有行缓存都固定容量，严格运行热路径不会分配。
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq, wincode::SchemaRead, wincode::SchemaWrite)]
 pub struct VicFetchPipeline {
     color_matrix: [u8; VIC_MATRIX_COLUMN_COUNT],
     graphics: [u8; VIC_MATRIX_COLUMN_COUNT],

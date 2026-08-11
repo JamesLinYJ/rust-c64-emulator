@@ -21,7 +21,7 @@ const MOS8580_VOICE_SCALE: i64 = 2_152;
 const MOS8580_VOICE_SCALE_FRACTION_BITS: u32 = 18;
 const FILTER_CUTOFF_MASK: u16 = 0x07ff;
 
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq, wincode::SchemaRead, wincode::SchemaWrite)]
 enum SidFilterBackend {
     Mos6581(SidMos6581Filter),
     Mos8580(SidMos8580Filter),
@@ -29,7 +29,7 @@ enum SidFilterBackend {
 
 /// Model-selecting SID internal filter facade with one register contract for
 /// both chip revisions.
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq, wincode::SchemaRead, wincode::SchemaWrite)]
 pub struct SidFilter {
     backend: SidFilterBackend,
 }
@@ -126,7 +126,7 @@ impl SidFilter {
 }
 
 /// Linear two-integrator-loop model of the revised MOS 8580 filter and mixer.
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq, wincode::SchemaRead, wincode::SchemaWrite)]
 pub struct SidMos8580Filter {
     cutoff: u16,
     resonance_routing: u8,

@@ -22,7 +22,7 @@ const TAP_SYSTEM_OFFSET: usize = 13;
 const TAP_VERSION_OFFSET: usize = 12;
 const TAP_VIDEO_STANDARD_OFFSET: usize = 14;
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, wincode::SchemaRead, wincode::SchemaWrite)]
 #[repr(u8)]
 pub enum TapVersion {
     Legacy = 0,
@@ -41,7 +41,7 @@ impl TryFrom<u8> for TapVersion {
     }
 }
 
-#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, wincode::SchemaRead, wincode::SchemaWrite)]
 #[repr(u8)]
 pub enum TapVideoStandard {
     #[default]
@@ -75,14 +75,14 @@ impl TryFrom<u8> for TapVideoStandard {
     }
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, wincode::SchemaRead, wincode::SchemaWrite)]
 pub struct TapPulse {
     pub data_offset: usize,
     pub encoded_length: u8,
     pub source_cycles: u32,
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, wincode::SchemaRead, wincode::SchemaWrite)]
 pub enum TapImageError {
     HeaderTooShort { actual: usize },
     InvalidSignature,
@@ -164,7 +164,7 @@ impl fmt::Display for TapImageError {
 
 impl std::error::Error for TapImageError {}
 
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq, wincode::SchemaRead, wincode::SchemaWrite)]
 pub struct TapImage {
     bytes: Vec<u8>,
     pulses: Vec<TapPulse>,
@@ -295,7 +295,7 @@ impl TapImage {
     }
 }
 
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq, wincode::SchemaRead, wincode::SchemaWrite)]
 pub struct WritableTapImage {
     data_length: u32,
     pulses: Vec<TapPulse>,

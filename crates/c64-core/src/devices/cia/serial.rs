@@ -15,7 +15,7 @@ const SERIAL_INTERRUPT_DELAY_CYCLES: u8 = 2;
 const OUTPUT_REGISTER_LOAD_PIPELINE_INPUT: u8 = 1 << 1;
 const OUTPUT_CLOCK_PIPELINE_INPUT: u8 = 1 << 1;
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, wincode::SchemaRead, wincode::SchemaWrite)]
 pub(super) struct Mos6526SerialPort {
     buffered_output_byte: Option<u8>,
     input_bits_received: u8,

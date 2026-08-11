@@ -236,7 +236,7 @@ impl From<Amd29F040BError> for CartridgeError {
     }
 }
 
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq, wincode::SchemaRead, wincode::SchemaWrite)]
 pub struct StandardRomCartridge {
     mode: CartridgeMode,
     rom_low: Box<[u8]>,
@@ -263,7 +263,7 @@ impl StandardRomCartridge {
     }
 }
 
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq, wincode::SchemaRead, wincode::SchemaWrite)]
 struct BankedCartridgeRom {
     banks: Vec<Box<[u8]>>,
 }
@@ -278,7 +278,7 @@ impl BankedCartridgeRom {
     }
 }
 
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq, wincode::SchemaRead, wincode::SchemaWrite)]
 pub struct OceanCartridge {
     rom: BankedCartridgeRom,
     selected_bank: usize,
@@ -305,7 +305,7 @@ impl OceanCartridge {
     }
 }
 
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq, wincode::SchemaRead, wincode::SchemaWrite)]
 pub struct MagicDeskCartridge {
     rom: BankedCartridgeRom,
     selected_bank: usize,
@@ -338,7 +338,7 @@ impl MagicDeskCartridge {
     }
 }
 
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq, wincode::SchemaRead, wincode::SchemaWrite)]
 pub enum Cartridge {
     Standard(StandardRomCartridge),
     Ocean(OceanCartridge),

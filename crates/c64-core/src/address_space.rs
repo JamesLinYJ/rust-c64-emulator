@@ -156,9 +156,10 @@ impl fmt::Display for FirmwareError {
 
 impl std::error::Error for FirmwareError {}
 
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq, wincode::SchemaRead, wincode::SchemaWrite)]
 pub struct C64AddressSpace {
     memory: CoherentMemory,
+    #[wincode(skip(default_val = C64Firmware::blank_for_test()))]
     firmware: C64Firmware,
     processor_port: ProcessorPort6510,
     pla: C64Pla,
@@ -199,16 +200,16 @@ impl C64AddressSpace {
         &self.firmware
     }
 
+    pub(crate) fn replace_firmware(&mut self, firmware: C64Firmware) {
+        self.firmware = firmware;
+    }
+
     pub fn read_base_ram(&self, address: u16) -> u8 {
         self.memory.read_base_ram(address)
     }
 
     pub fn write_base_ram(&mut self, address: u16, value: u8, source: MemoryWriteSource) {
         self.memory.write_base_ram(address, value, source);
-    }
-
-    pub(crate) fn clone_base_ram(&self) -> Box<[u8; 65_536]> {
-        self.memory.clone_base_ram()
     }
 
     pub(crate) fn restore_base_ram(&mut self, ram: &[u8]) {
@@ -225,6 +226,10 @@ impl C64AddressSpace {
 
     pub const fn cpu_data_bus_latch(&self) -> u8 {
         self.cpu_data_bus_latch
+    }
+
+    pub(crate) fn state_is_valid(&self) -> bool {
+        self.color_ram.len() == COLOR_RAM_BYTES
     }
 
     pub fn color_ram(&self) -> &[u8] {

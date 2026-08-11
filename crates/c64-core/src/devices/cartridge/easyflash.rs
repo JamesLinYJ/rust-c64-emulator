@@ -43,7 +43,7 @@ const MODE_TABLE: [CartridgeMode; 16] = [
     CartridgeMode::Game16K,
 ];
 
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq, wincode::SchemaRead, wincode::SchemaWrite)]
 pub struct EasyFlashCartridge {
     flash_low: Amd29F040BFlash,
     flash_high: Amd29F040BFlash,

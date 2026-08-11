@@ -13,7 +13,7 @@ const DATA_END: u8 = 0x3f;
 const CRUNCH_AND_MASK: u8 = 0x2a;
 const CRUNCH_OR_MASK: u8 = 0x15;
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, wincode::SchemaRead, wincode::SchemaWrite)]
 pub(super) struct VicSpriteDma {
     pub(super) active: bool,
     pub(super) display_active: bool,

@@ -117,7 +117,7 @@ impl From<VicPixelError> for VicError {
 }
 
 /// PAL MOS 6569R3。寄存器、半周期取数、边框、像素和碰撞在同一芯片时钟提交。
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq, wincode::SchemaRead, wincode::SchemaWrite)]
 pub struct VicII {
     registers: [u8; VIC_REGISTER_COUNT],
     cycle_sequencer: VicCycleSequencer,

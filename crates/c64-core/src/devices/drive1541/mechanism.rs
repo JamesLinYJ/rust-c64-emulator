@@ -38,7 +38,7 @@ const CONTROL_LED_ON: u8 = 1 << 1;
 const CONTROL_READING: u8 = 1 << 2;
 const CONTROL_BYTE_READY_ENABLED: u8 = 1 << 3;
 
-#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, wincode::SchemaRead, wincode::SchemaWrite)]
 #[repr(u8)]
 pub enum Drive1541StepperPhase {
     #[default]
@@ -78,7 +78,7 @@ pub struct Drive1541ControlState {
     pub stepper_phase: Drive1541StepperPhase,
 }
 
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq, wincode::SchemaRead, wincode::SchemaWrite)]
 pub enum Drive1541DiskImage {
     D64(D64DiskImage),
     G64(G64DiskImage),
@@ -209,7 +209,7 @@ impl From<Drive1541GcrError> for Drive1541MechanismError {
     }
 }
 
-#[derive(Clone, Debug, Default, Eq, PartialEq)]
+#[derive(Clone, Debug, Default, Eq, PartialEq, wincode::SchemaRead, wincode::SchemaWrite)]
 struct ByteReadyState {
     asserted: bool,
     transition_sequence: u64,
@@ -233,7 +233,7 @@ impl ByteReadyState {
     }
 }
 
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq, wincode::SchemaRead, wincode::SchemaWrite)]
 struct MechanismMediaState {
     disk: Option<Drive1541DiskImage>,
     raw_tracks: [Option<Vec<u8>>; RAW_TRACK_SLOT_COUNT],
@@ -448,7 +448,7 @@ impl Drive1541GcrSignals for MechanismGcrSignals<'_> {
 
 /// Owns the 1541 spindle, head, media cache and read/write separator. It has no
 /// knowledge of VIA register addresses or IEC protocol state.
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq, wincode::SchemaRead, wincode::SchemaWrite)]
 pub struct Drive1541Mechanism {
     media: MechanismMediaState,
     gcr_circuit: Drive1541GcrCircuit,

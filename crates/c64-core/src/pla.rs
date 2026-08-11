@@ -29,7 +29,7 @@ impl Default for PlaInputs {
     }
 }
 
-#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, wincode::SchemaRead, wincode::SchemaWrite)]
 pub enum CartridgeMode {
     #[default]
     Detached,
@@ -38,7 +38,7 @@ pub enum CartridgeMode {
     Ultimax,
 }
 
-#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, wincode::SchemaRead, wincode::SchemaWrite)]
 #[repr(u8)]
 pub enum PlaTarget {
     #[default]
@@ -52,7 +52,7 @@ pub enum PlaTarget {
     OpenBus,
 }
 
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq, wincode::SchemaRead, wincode::SchemaWrite)]
 pub struct C64Pla {
     read_map: [PlaTarget; 256],
     write_map: [PlaTarget; 256],

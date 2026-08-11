@@ -51,7 +51,7 @@ impl std::error::Error for SidPcmRangeError {}
 
 /// Fixed-point model of the 10 kOhm/1000 pF low-pass and 1 kOhm/10 uF
 /// high-pass network connected after SID AUDIO OUT on the C64 board.
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq, wincode::SchemaRead, wincode::SchemaWrite)]
 pub struct SidExternalFilter {
     low_pass_coefficient: i64,
     high_pass_coefficient: i64,

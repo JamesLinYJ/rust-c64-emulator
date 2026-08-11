@@ -15,7 +15,7 @@ const RATE_COUNTER_OVERFLOW_BIT: u16 = 0x8000;
 const RATE_COUNTER_MASK: u16 = 0x7fff;
 const POWER_ON_ENVELOPE_COUNTER: u8 = 0xaa;
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, wincode::SchemaRead, wincode::SchemaWrite)]
 enum EnvelopeState {
     Attack,
     DecaySustain,
@@ -23,7 +23,7 @@ enum EnvelopeState {
 }
 
 /// SID 数字 ADSR 单元，包含硬件流水线延迟与 15 位计数器绕回行为。
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq, wincode::SchemaRead, wincode::SchemaWrite)]
 pub struct SidEnvelopeGenerator {
     attack: u8,
     decay: u8,

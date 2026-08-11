@@ -165,7 +165,19 @@ try {
   assert.equal(blankTap.length, 20);
   assert.equal(blankTap[12], 1);
   assert.equal(blankTap[14], 0);
+
+  source.attach_reu_image(256, initializedReu);
+  source.insert_tap(readOnlyTap, 0);
+  source.tape_play();
+  source.run_cpu_slots(400);
+  const savedElapsedSystemCycles = source.elapsed_system_cycles_low();
+  const savedTapePulseIndex = source.tape_pulse_index();
   const state = source.save_state();
+  assert.equal(new TextDecoder().decode(state.subarray(0, 8)), 'RC64VM02');
+  assert.equal(
+    new DataView(state.buffer, state.byteOffset, state.byteLength).getUint16(8, true),
+    2,
+  );
 
   restored.write_base_ram(0xc000, 0x33);
   const corruptState = state.slice();
@@ -176,7 +188,13 @@ try {
   restored.load_state(state);
   assert.equal(restored.read_base_ram(0xc000), 0x5a);
   assert.equal(restored.effective_slots_per_system_cycle(), 20);
-  assert.equal(restored.elapsed_system_cycles_low(), 2);
+  assert.equal(restored.elapsed_system_cycles_low(), savedElapsedSystemCycles);
+  assert.equal(restored.reu_attached(), true);
+  assert.deepEqual(restored.export_reu_ram(), initializedReu);
+  assert.equal(restored.tape_mounted(), true);
+  assert.equal(restored.tape_transport(), 1);
+  assert.equal(restored.tape_pulse_index(), savedTapePulseIndex);
+  assert.deepEqual(restored.save_state(), state);
 
   restored.reset();
   assert.equal(restored.effective_slots_per_system_cycle(), 1);
@@ -192,7 +210,7 @@ try {
 }
 
 console.log(
-  'Wasm ABI 安全验证通过：边界输入、状态原子性、Cartridge/EasyFlash、REU、Tape、Turbo 与 64 KiB RAM 均符合契约。',
+  'Wasm ABI 安全验证通过：边界输入、完整状态原子性、Cartridge/EasyFlash、REU、Tape、Turbo 与 64 KiB RAM 均符合契约。',
 );
 
 function assertC64WasmModule(value: unknown): asserts value is C64WasmModule {

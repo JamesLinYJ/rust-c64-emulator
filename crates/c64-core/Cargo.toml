@@ -11,6 +11,9 @@ repository.workspace = true
 [lints]
 workspace = true
 
+[dependencies]
+wincode = { version = "=0.6.1", features = ["derive"] }
+
 [dev-dependencies]
 serde = { version = "1.0.228", features = ["derive"] }
 serde_json = "1.0.149"

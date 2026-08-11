@@ -82,7 +82,7 @@ impl fmt::Display for Cpu6510Error {
 impl std::error::Error for Cpu6510Error {}
 
 /// 无分配、可在任意总线周期暂停的 NMOS 6510 严格执行器。
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq, wincode::SchemaRead, wincode::SchemaWrite)]
 pub struct Cpu6510 {
     state: Cpu6510State,
     cycles_consumed: u16,

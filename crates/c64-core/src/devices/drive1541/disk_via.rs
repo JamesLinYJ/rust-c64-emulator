@@ -54,7 +54,7 @@ impl From<Drive1541MechanismError> for Drive1541DiskViaError {
     }
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, wincode::SchemaRead, wincode::SchemaWrite)]
 struct ViaOutputState {
     port_a: u8,
     port_b: u8,
@@ -76,7 +76,7 @@ impl ViaOutputState {
 /// Maps VIA2 pins to the 1541 head electronics while leaving register and
 /// timer behavior in [`Mos6522`]. The mechanism is borrowed only for each
 /// board transaction, so neither component owns callbacks into the other.
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq, wincode::SchemaRead, wincode::SchemaWrite)]
 pub struct Drive1541DiskVia {
     via: Mos6522,
     device_number: u8,

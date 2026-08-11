@@ -120,7 +120,7 @@ const STATE_CB1_OUTPUT_HIGH: u16 = 1 << 13;
 
 /// MOS 6522 register, timer, shift and handshake core. Board wrappers update
 /// external input pins before accesses and consume the exposed output levels.
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq, wincode::SchemaRead, wincode::SchemaWrite)]
 pub struct Mos6522 {
     registers: [u8; MOS6522_REGISTER_COUNT],
     timer_1_counter: u16,

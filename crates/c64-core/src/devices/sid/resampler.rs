@@ -44,7 +44,7 @@ impl std::error::Error for SidResamplerConfigError {}
 
 /// Exact-area downsampler. Phase, area and interval lengths remain integer;
 /// only a completed normalized PCM sample is converted to `f32`.
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq, wincode::SchemaRead, wincode::SchemaWrite)]
 pub struct SidAudioResampler {
     input_rate_hz: u32,
     output_rate_hz: u32,

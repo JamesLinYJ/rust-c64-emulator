@@ -62,7 +62,7 @@ impl From<Drive1541MachineError> for Drive1541ClockError {
 /// The rational phase is represented entirely by integers. A generated drive
 /// cycle is executed immediately, so IEC reads and writes cannot observe a
 /// future host cycle.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, wincode::SchemaRead, wincode::SchemaWrite)]
 pub struct Drive1541ClockSynchronizer {
     host_clock_hz: u64,
     host_clock_remainder: u64,

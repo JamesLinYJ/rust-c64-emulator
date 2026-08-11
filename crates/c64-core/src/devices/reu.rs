@@ -35,7 +35,7 @@ const ADDRESS_CONTROL_UNUSED_BITS: u8 = 0x3f;
 const CLASSIC_REU_ADDRESS_MASK: u32 = 0x0007_ffff;
 const CLASSIC_REU_BANK_UNUSED_BITS: u8 = 0xf8;
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, wincode::SchemaRead, wincode::SchemaWrite)]
 #[repr(u16)]
 pub enum ReuSize {
     Kib128 = 128,
@@ -102,7 +102,7 @@ impl fmt::Display for ReuImageError {
 
 impl std::error::Error for ReuImageError {}
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, wincode::SchemaRead, wincode::SchemaWrite)]
 enum TransferType {
     C64ToReu,
     ReuToC64,
@@ -122,14 +122,14 @@ impl TransferType {
     }
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, wincode::SchemaRead, wincode::SchemaWrite)]
 enum DmaPhase {
     Transfer,
     SwapWrite { value_from_reu: u8 },
     VerifyFailureDelay { compare_last_byte: bool },
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, wincode::SchemaRead, wincode::SchemaWrite)]
 struct DmaState {
     transfer_type: TransferType,
     c64_address: u16,
@@ -147,7 +147,7 @@ pub(crate) enum ReuDmaOperation {
     Idle,
 }
 
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq, wincode::SchemaRead, wincode::SchemaWrite)]
 pub struct RamExpansionUnit {
     size: ReuSize,
     ram: Box<[u8]>,
@@ -214,6 +214,10 @@ impl RamExpansionUnit {
 
     pub fn ram_mut(&mut self) -> &mut [u8] {
         &mut self.ram
+    }
+
+    pub(crate) fn state_is_valid(&self) -> bool {
+        self.ram.len() == self.size.byte_length()
     }
 
     /// Replace all physical REU DRAM without changing controller registers.

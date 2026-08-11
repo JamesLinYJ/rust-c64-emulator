@@ -16,7 +16,7 @@ const EXPAND_HORIZONTAL: u8 = 1 << 4;
 const COLLISION_WITH_SPRITE: u8 = 1 << 5;
 const COLLISION_WITH_FOREGROUND: u8 = 1 << 6;
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, wincode::SchemaRead, wincode::SchemaWrite)]
 pub struct VicSprite {
     pub x: u16,
     pub y: u8,

@@ -26,7 +26,7 @@ const STATE_ONE_SHOT: u16 = 0x1000;
 const CONTROL_STATE_MASK: u16 =
     STATE_START | STATE_ONE_SHOT_CONTROL | STATE_FORCE_LOAD_CONTROL | STATE_PROCESSOR_CLOCK_INPUT;
 
-#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, wincode::SchemaRead, wincode::SchemaWrite)]
 pub(super) enum TimerInputMode {
     #[default]
     ProcessorClock,
@@ -46,7 +46,7 @@ impl TimerInputMode {
     }
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, wincode::SchemaRead, wincode::SchemaWrite)]
 pub(super) struct Mos6526Timer {
     counter: u16,
     pub(super) input_mode: TimerInputMode,

@@ -56,7 +56,7 @@ impl From<Drive1541DiskViaError> for Drive1541MemoryError {
 }
 
 /// The 1541 long-board decoder, including its unselected open-bus latch.
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq, wincode::SchemaRead, wincode::SchemaWrite)]
 pub struct Drive1541Memory {
     ram: [u8; DRIVE_1541_RAM_SIZE],
     rom: [u8; DRIVE_1541_ROM_SIZE],

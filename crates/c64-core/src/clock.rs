@@ -12,13 +12,24 @@ use core::fmt;
 
 use crate::architecture::SlotsPerSystemCycle;
 
-#[derive(Clone, Copy, Debug, Default, Eq, Ord, PartialEq, PartialOrd)]
+#[derive(
+    Clone,
+    Copy,
+    Debug,
+    Default,
+    Eq,
+    Ord,
+    PartialEq,
+    PartialOrd,
+    wincode::SchemaRead,
+    wincode::SchemaWrite,
+)]
 pub struct VirtualTimestamp {
     pub system_cycle: u64,
     pub slot: u8,
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, wincode::SchemaRead, wincode::SchemaWrite)]
 pub struct VirtualClock {
     timestamp: VirtualTimestamp,
     slots_per_system_cycle: SlotsPerSystemCycle,

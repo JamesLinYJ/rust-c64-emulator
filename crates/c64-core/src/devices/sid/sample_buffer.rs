@@ -10,7 +10,7 @@
 
 /// Fixed-capacity overwrite-oldest ring. Samples are stored as IEEE-754 bits
 /// so complete machine state remains reflexively comparable and serializable.
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq, wincode::SchemaRead, wincode::SchemaWrite)]
 pub(crate) struct SidSampleBuffer {
     values: Box<[u32]>,
     read_index: usize,
@@ -31,6 +31,13 @@ impl SidSampleBuffer {
 
     pub(crate) const fn len(&self) -> usize {
         self.length
+    }
+
+    pub(crate) fn state_is_valid(&self, expected_capacity: usize) -> bool {
+        self.values.len() == expected_capacity
+            && self.read_index < expected_capacity
+            && self.write_index < expected_capacity
+            && self.length <= expected_capacity
     }
 
     pub(crate) fn push(&mut self, value: f32) -> bool {

@@ -8,17 +8,34 @@
 //   Author:     OpenAI Codex
 // --------------------------------------------------------------------------
 
-use core::fmt;
+use core::{fmt, ops::Deref};
 
 use super::filter_6581_model::{
     Sid6581FilterModel, Sid6581IntegratorState, shared_mos6581_filter_model,
 };
 use super::filter_bit;
 
+#[derive(Clone, Copy, wincode::SchemaRead, wincode::SchemaWrite)]
+struct Sid6581FilterModelHandle;
+
+impl Deref for Sid6581FilterModelHandle {
+    type Target = Sid6581FilterModel;
+
+    fn deref(&self) -> &Self::Target {
+        shared_mos6581_filter_model()
+    }
+}
+
+impl fmt::Debug for Sid6581FilterModelHandle {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        self.deref().fmt(formatter)
+    }
+}
+
 /// Per-chip capacitor and register state for the nonlinear MOS 6581 filter.
-#[derive(Clone)]
+#[derive(Clone, wincode::SchemaRead, wincode::SchemaWrite)]
 pub struct SidMos6581Filter {
-    model: &'static Sid6581FilterModel,
+    model: Sid6581FilterModelHandle,
     band_pass_integrator: Sid6581IntegratorState,
     low_pass_integrator: Sid6581IntegratorState,
     band_pass_voltage: i32,
@@ -75,9 +92,8 @@ impl Default for SidMos6581Filter {
 
 impl SidMos6581Filter {
     pub fn new() -> Self {
-        let model = shared_mos6581_filter_model();
         let mut result = Self {
-            model,
+            model: Sid6581FilterModelHandle,
             band_pass_integrator: Sid6581FilterModel::create_integrator_state(),
             low_pass_integrator: Sid6581FilterModel::create_integrator_state(),
             band_pass_voltage: 0,

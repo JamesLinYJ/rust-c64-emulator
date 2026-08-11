@@ -105,7 +105,7 @@ impl VicPixelDataSource for VicFetchPipeline {
     }
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, wincode::SchemaRead, wincode::SchemaWrite)]
 pub struct VicPixelModes(u8);
 
 impl VicPixelModes {
@@ -151,7 +151,7 @@ impl VicPixelModes {
     }
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, wincode::SchemaRead, wincode::SchemaWrite)]
 pub struct VicPixelRegisters {
     pub background_colors: [u32; 4],
     pub border_color: u32,
@@ -238,7 +238,7 @@ struct SpritePixel {
     mask: u8,
 }
 
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq, wincode::SchemaRead, wincode::SchemaWrite)]
 pub struct VicPixelPipeline {
     line_pixels: [u32; VIC_RASTER_OUTPUT_WIDTH],
     timing: VicTiming,
