@@ -13,6 +13,7 @@ use core::fmt;
 use crate::cpu::{Cpu6510, Cpu6510Error, CpuBus, CpuIrqLine};
 use crate::devices::iec::IecBus;
 
+use super::iec_via::Drive1541IecViaError;
 use super::mechanism::{Drive1541Mechanism, Drive1541MechanismError};
 use super::memory::{Drive1541Memory, Drive1541MemoryError};
 
@@ -69,32 +70,22 @@ pub struct Drive1541Machine {
 }
 
 impl Drive1541Machine {
-    /// Construct a drive CPU and perform its initial reset-vector reads without
-    /// advancing the externally visible machine clock.
-    ///
-    /// # Errors
-    ///
-    /// Propagates memory errors encountered while reading the reset vector.
-    pub fn new(
-        mut memory: Drive1541Memory,
-        mut mechanism: Drive1541Mechanism,
-        iec_bus: &mut IecBus,
-    ) -> Result<Self, Drive1541MachineError> {
+    /// Construct a drive CPU and sample its ROM reset vector without advancing
+    /// the externally visible machine clock.
+    pub fn new(mut memory: Drive1541Memory, mechanism: Drive1541Mechanism) -> Self {
         let mut cpu = Cpu6510::new();
-        let reset_vector_low = memory.read(iec_bus, &mut mechanism, 0xfffc)?;
-        let reset_vector_high = memory.read(iec_bus, &mut mechanism, 0xfffd)?;
         let mut cpu_state = cpu.state();
-        cpu_state.program_counter = u16::from_le_bytes([reset_vector_low, reset_vector_high]);
+        cpu_state.program_counter = memory.read_reset_vector();
         cpu.restore_state(cpu_state);
         let observed_byte_ready_edge_sequence = mechanism.byte_ready_edge_sequence();
-        Ok(Self {
+        Self {
             cpu,
             memory,
             mechanism,
             irq_line: CpuIrqLine::new(),
             elapsed_cycles: 0,
             observed_byte_ready_edge_sequence,
-        })
+        }
     }
 
     pub const fn cpu(&self) -> &Cpu6510 {
@@ -225,6 +216,18 @@ impl Drive1541Machine {
         Ok(self.elapsed_cycles - start_cycle)
     }
 
+    /// Reset the drive electronics and CPU while preserving RAM, mounted media
+    /// and the physical head position.
+    ///
+    /// # Errors
+    ///
+    /// Propagates errors from the seven clocked CPU reset cycles.
+    pub fn reset_hardware(&mut self, iec_bus: &mut IecBus) -> Result<u64, Drive1541MachineError> {
+        self.mechanism.reset_electronics();
+        self.memory.reset_hardware(iec_bus, &mut self.mechanism);
+        self.reset_cpu(iec_bus)
+    }
+
     /// Reset only the scheduler clock and IRQ latch.
     pub fn reset_timing(&mut self) {
         self.irq_line.reset();
@@ -262,6 +265,15 @@ impl Drive1541Machine {
             .write(iec_bus, &mut self.mechanism, address, value)?;
         self.synchronize_interrupt_input();
         Ok(())
+    }
+
+    /// Consume the machine and release its VIA1 port from the shared IEC bus.
+    ///
+    /// # Errors
+    ///
+    /// Returns an IEC error if the internally owned port was already detached.
+    pub fn disconnect(self, iec_bus: &mut IecBus) -> Result<(), Drive1541IecViaError> {
+        self.memory.disconnect(iec_bus)
     }
 
     fn advance_hardware_one_cycle(

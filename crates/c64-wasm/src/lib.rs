@@ -179,6 +179,7 @@ impl C64Vm {
 
 fn to_js_error(error: CoreError) -> JsError {
     match error {
+        CoreError::Chipset(inner) => JsError::new(&inner.to_string()),
         CoreError::Execution(inner) => JsError::new(&inner.to_string()),
         CoreError::Clock(inner) => JsError::new(&inner.to_string()),
         CoreError::Cpu(inner) => JsError::new(&inner.to_string()),

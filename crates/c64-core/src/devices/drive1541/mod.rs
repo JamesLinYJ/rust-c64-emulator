@@ -11,6 +11,7 @@
 pub mod clock;
 pub mod d64_gcr;
 pub mod disk_via;
+pub mod drive;
 pub mod gcr;
 pub mod iec_via;
 pub mod machine;

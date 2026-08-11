@@ -36,7 +36,6 @@ pub use clock::{VirtualClock, VirtualClockError, VirtualTimestamp};
 pub use cpu::{
     Cpu6510, Cpu6510Error, Cpu6510State, CpuBus, CpuInterruptTiming, CpuIrqLine, CpuNmiLine,
 };
-pub use devices::C64Chipset;
 pub use devices::cia::{Mos6526, Mos6526Model, Mos6526Timing, Mos6526TimingError};
 pub use devices::iec::{IecBus, IecBusError, IecBusState, IecBusTransition, IecLine, IecPort};
 pub use devices::sid::{
@@ -46,6 +45,7 @@ pub use devices::sid::{
 };
 pub use devices::via::{Mos6522, Mos6522ControlLine, Mos6522ShiftMode};
 pub use devices::vic::{VicCycleResult, VicCycleSequencer, VicCycleSignals};
+pub use devices::{C64Chipset, C64ChipsetError};
 pub use machine::{C64Core, CoreDiagnostics, CoreError, CpuBusAccessKind, CpuBusTransaction};
 pub use memory::{
     BASE_RAM_BYTES, CoherentMemory, MemoryWriteSource, PageDescriptor, PageDomain, PhysicalTarget,

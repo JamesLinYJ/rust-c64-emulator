@@ -18,7 +18,7 @@ use crate::{
     },
     clock::{VirtualClock, VirtualClockError, VirtualTimestamp},
     cpu::{Cpu6510, Cpu6510Error, Cpu6510State, CpuBus, CpuIrqLine, CpuNmiLine},
-    devices::{C64Chipset, vic::VicError},
+    devices::{C64Chipset, C64ChipsetError, vic::VicError},
     memory::{CoherentMemory, MemoryWriteSource},
     state::{self, StateError, StateImage},
 };
@@ -137,6 +137,30 @@ impl C64Core {
         &self.devices
     }
 
+    /// Attach one explicitly configured 1541 at a system-cycle boundary.
+    ///
+    /// # Errors
+    ///
+    /// Rejects an internal CPU slot, duplicate attachment, invalid drive
+    /// configuration or a full IEC bus.
+    pub fn attach_drive1541(&mut self, device_number: u8, rom: &[u8]) -> Result<(), CoreError> {
+        self.clock.advance_system_cycles(0)?;
+        self.devices.attach_drive1541(device_number, rom)?;
+        Ok(())
+    }
+
+    /// Detach the configured 1541 at a system-cycle boundary.
+    ///
+    /// # Errors
+    ///
+    /// Rejects an internal CPU slot or an empty drive slot and propagates IEC
+    /// detach errors.
+    pub fn detach_drive1541(&mut self) -> Result<(), CoreError> {
+        self.clock.advance_system_cycles(0)?;
+        self.devices.detach_drive1541()?;
+        Ok(())
+    }
+
     /// 在下一个公开提交边界应用执行请求。
     ///
     /// # Errors
@@ -202,7 +226,7 @@ impl C64Core {
         self.clock
             .set_slots_per_system_cycle(SlotsPerSystemCycle::STRICT)?;
         self.execution.reset_to_strict();
-        self.devices.reset();
+        self.devices.reset()?;
         self.irq_line.reset();
         self.nmi_line.reset();
         self.address_space
@@ -230,17 +254,26 @@ impl C64Core {
         Ok(())
     }
 
-    pub fn power_cycle_with_profile(&mut self, profile: MachineProfile) {
+    /// Power-cycle the C64 board while retaining explicitly attached external
+    /// drive configuration and physical media.
+    ///
+    /// # Errors
+    ///
+    /// Propagates a 1541 reset error without committing the new machine state.
+    pub fn power_cycle_with_profile(&mut self, profile: MachineProfile) -> Result<(), CoreError> {
+        let mut devices = self.devices.clone();
+        devices.reinitialize_host(self.config.video_standard, self.config.sid_model)?;
+        let address_space = C64AddressSpace::new(self.address_space.firmware().clone());
         self.config.profile = profile;
         self.execution.reset_to_strict();
         self.clock.reset();
         self.cpu = Cpu6510::new();
-        self.address_space = C64AddressSpace::new(self.address_space.firmware().clone());
-        self.devices =
-            C64Chipset::new_with_sid_model(self.config.video_standard, self.config.sid_model);
+        self.address_space = address_space;
+        self.devices = devices;
         self.irq_line.reset();
         self.nmi_line.reset();
         self.diagnostics = CoreDiagnostics::default();
+        Ok(())
     }
 
     /// 从系统周期边界推进 legacy 时钟域。
@@ -314,19 +347,20 @@ impl C64Core {
     ///
     /// # Errors
     ///
-    /// 头部、版本、section、配置或时钟状态无效时返回 `CoreError::State`。
+    /// 头部、版本、section、配置、时钟状态或外设复位无效时返回错误。
     pub fn load_state(&mut self, bytes: &[u8]) -> Result<(), CoreError> {
         let image = state::decode(bytes)?;
         let mut address_space = C64AddressSpace::new(self.address_space.firmware().clone());
         address_space.restore_base_ram(image.base_ram.as_ref());
+        let mut devices = self.devices.clone();
+        devices.reinitialize_host(image.config.video_standard, image.config.sid_model)?;
         self.config = image.config;
         self.execution = image.execution;
         self.clock
             .restore(image.timestamp, image.execution.status().effective_slots);
         self.cpu.restore_state(image.cpu);
         self.address_space = address_space;
-        self.devices =
-            C64Chipset::new_with_sid_model(self.config.video_standard, self.config.sid_model);
+        self.devices = devices;
         self.irq_line.reset();
         self.nmi_line.reset();
         self.diagnostics.state_loads = self.diagnostics.state_loads.wrapping_add(1);
@@ -383,7 +417,7 @@ struct ClockedCpuBus<'a> {
     nmi_line: &'a mut CpuNmiLine,
     diagnostics: &'a mut CoreDiagnostics,
     completed_system_cycle: bool,
-    hardware_error: Option<VicError>,
+    hardware_error: Option<C64ChipsetError>,
 }
 
 impl<'a> ClockedCpuBus<'a> {
@@ -411,7 +445,7 @@ impl<'a> ClockedCpuBus<'a> {
         self.completed_system_cycle
     }
 
-    fn take_hardware_error(&mut self) -> Option<VicError> {
+    fn take_hardware_error(&mut self) -> Option<C64ChipsetError> {
         self.hardware_error.take()
     }
 
@@ -437,9 +471,15 @@ impl<'a> ClockedCpuBus<'a> {
         if let Err(error) = result
             && self.hardware_error.is_none()
         {
-            self.hardware_error = Some(error);
+            self.hardware_error = Some(error.into());
         }
         self.devices.clock_sid();
+        let result = self.devices.clock_drive1541();
+        if let Err(error) = result
+            && self.hardware_error.is_none()
+        {
+            self.hardware_error = Some(error);
+        }
         let sampled_cycle = self.clock.timestamp().system_cycle.saturating_add(1);
         self.irq_line
             .update(self.devices.irq_asserted(), sampled_cycle);
@@ -514,6 +554,7 @@ impl CpuBus for ClockedCpuBus<'_> {
 
 #[derive(Debug)]
 pub enum CoreError {
+    Chipset(C64ChipsetError),
     Execution(ExecutionConfigError),
     Clock(VirtualClockError),
     Cpu(Cpu6510Error),
@@ -524,6 +565,15 @@ pub enum CoreError {
 impl From<ExecutionConfigError> for CoreError {
     fn from(error: ExecutionConfigError) -> Self {
         Self::Execution(error)
+    }
+}
+
+impl From<C64ChipsetError> for CoreError {
+    fn from(error: C64ChipsetError) -> Self {
+        match error {
+            C64ChipsetError::Vic(error) => Self::Vic(error),
+            other => Self::Chipset(other),
+        }
     }
 }
 
@@ -554,6 +604,7 @@ impl From<VicError> for CoreError {
 impl fmt::Display for CoreError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
+            Self::Chipset(error) => error.fmt(formatter),
             Self::Execution(error) => error.fmt(formatter),
             Self::Clock(error) => error.fmt(formatter),
             Self::Cpu(error) => error.fmt(formatter),

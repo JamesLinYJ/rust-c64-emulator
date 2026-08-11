@@ -16,4 +16,4 @@ pub mod sid;
 pub mod via;
 pub mod vic;
 
-pub use chipset::C64Chipset;
+pub use chipset::{C64Chipset, C64ChipsetError};

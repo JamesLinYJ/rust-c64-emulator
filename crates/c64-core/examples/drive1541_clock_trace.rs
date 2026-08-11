@@ -115,7 +115,7 @@ fn main() -> Result<(), Box<dyn Error>> {
     let iec_via = Drive1541IecVia::new(8, &mut iec_bus)?;
     let disk_via = Drive1541DiskVia::new(8, &mut mechanism)?;
     let memory = Drive1541Memory::new(&input.rom, iec_via, disk_via)?;
-    let mut machine = Drive1541Machine::new(memory, mechanism, &mut iec_bus)?;
+    let mut machine = Drive1541Machine::new(memory, mechanism);
     let mut clock = Drive1541ClockSynchronizer::try_new(input.host_clock_hz)?;
     let mut snapshots = Vec::with_capacity(input.operations.len() + 1);
     snapshots.push(snapshot(clock, &machine, &iec_bus, None));

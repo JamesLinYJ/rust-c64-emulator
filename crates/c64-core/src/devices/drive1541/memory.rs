@@ -13,7 +13,7 @@ use core::fmt;
 use crate::devices::iec::IecBus;
 
 use super::disk_via::{Drive1541DiskVia, Drive1541DiskViaError};
-use super::iec_via::Drive1541IecVia;
+use super::iec_via::{Drive1541IecVia, Drive1541IecViaError};
 use super::mechanism::Drive1541Mechanism;
 
 pub const DRIVE_1541_RAM_SIZE: usize = 0x0800;
@@ -81,13 +81,21 @@ impl Drive1541Memory {
         }
         let mut rom_image = [0; DRIVE_1541_ROM_SIZE];
         rom_image.copy_from_slice(rom);
-        Ok(Self {
+        Ok(Self::new_with_rom_image(&rom_image, iec_via, disk_via))
+    }
+
+    pub(super) const fn new_with_rom_image(
+        rom: &[u8; DRIVE_1541_ROM_SIZE],
+        iec_via: Drive1541IecVia,
+        disk_via: Drive1541DiskVia,
+    ) -> Self {
+        Self {
             ram: [0; DRIVE_1541_RAM_SIZE],
-            rom: rom_image,
+            rom: *rom,
             iec_via,
             disk_via,
             data_bus_value: u8::MAX,
-        })
+        }
     }
 
     pub const fn ram(&self) -> &[u8; DRIVE_1541_RAM_SIZE] {
@@ -112,6 +120,13 @@ impl Drive1541Memory {
 
     pub const fn last_data_bus_value(&self) -> u8 {
         self.data_bus_value
+    }
+
+    pub(super) fn read_reset_vector(&mut self) -> u16 {
+        let low = self.rom[0x3ffc];
+        let high = self.rom[0x3ffd];
+        self.data_bus_value = high;
+        u16::from_le_bytes([low, high])
     }
 
     /// Clock VIA1 followed by VIA2 after the mechanism phase for this cycle.
@@ -237,6 +252,15 @@ impl Drive1541Memory {
         self.data_bus_value = u8::MAX;
         self.iec_via.reset(iec_bus);
         self.disk_via.reset(mechanism);
+    }
+
+    /// Consume the decoder and release its VIA1 port from the shared IEC bus.
+    ///
+    /// # Errors
+    ///
+    /// Returns an IEC error if the internally owned port was already detached.
+    pub fn disconnect(self, iec_bus: &mut IecBus) -> Result<(), Drive1541IecViaError> {
+        self.iec_via.disconnect(iec_bus)
     }
 
     fn read_decoded(

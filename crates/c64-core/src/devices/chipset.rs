@@ -8,11 +8,14 @@
 //   作者:       OpenAI Codex
 // --------------------------------------------------------------------------
 
+use core::fmt;
+
 use crate::address_space::{C64BusDevices, CartridgeLines};
 use crate::architecture::VideoStandard;
 use crate::processor_port::ProcessorPortOutputState;
 
 use super::cia::{Mos6526, Mos6526Model, Mos6526Timing};
+use super::drive1541::drive::{Commodore1541Drive, Commodore1541DriveError};
 use super::iec::{IecBus, IecLine, IecPort};
 use super::sid::{
     DEFAULT_SAMPLE_RATE_HZ, NTSC_PROCESSOR_CLOCK_HZ, PAL_PROCESSOR_CLOCK_HZ, Sid, SidModel,
@@ -27,15 +30,53 @@ const CIA2_IEC_CLOCK_INPUT: u8 = 1 << 6;
 const CIA2_IEC_DATA_INPUT: u8 = 1 << 7;
 const CIA2_NON_IEC_INPUTS_HIGH: u8 = 0x3f;
 
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum C64ChipsetError {
+    Drive1541(Commodore1541DriveError),
+    Drive1541AlreadyAttached,
+    Drive1541NotAttached,
+    Vic(VicError),
+}
+
+impl fmt::Display for C64ChipsetError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Drive1541(error) => error.fmt(formatter),
+            Self::Drive1541AlreadyAttached => {
+                formatter.write_str("a Commodore 1541 is already attached")
+            }
+            Self::Drive1541NotAttached => formatter.write_str("no Commodore 1541 is attached"),
+            Self::Vic(error) => error.fmt(formatter),
+        }
+    }
+}
+
+impl std::error::Error for C64ChipsetError {}
+
+impl From<Commodore1541DriveError> for C64ChipsetError {
+    fn from(error: Commodore1541DriveError) -> Self {
+        Self::Drive1541(error)
+    }
+}
+
+impl From<VicError> for C64ChipsetError {
+    fn from(error: VicError) -> Self {
+        Self::Vic(error)
+    }
+}
+
 /// 主板级芯片接线。尚未迁移的扩展范围保持明确 open bus，不存在 TypeScript fallback。
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct C64Chipset {
+    video_standard: VideoStandard,
     irq_cia: Mos6526,
     nmi_cia: Mos6526,
     vic: VicII,
     sid: Sid,
     iec_bus: IecBus,
     iec_host_port: IecPort,
+    iec_reset_asserted: bool,
+    drive1541: Option<Commodore1541Drive>,
     cartridge_lines: CartridgeLines,
     processor_port_output: ProcessorPortOutputState,
     last_cpu_read_was_held: bool,
@@ -57,12 +98,15 @@ impl C64Chipset {
         };
         let (iec_bus, iec_host_port) = IecBus::new_with_attached_port();
         Self {
+            video_standard,
             irq_cia: Mos6526::new_with_valid_timing(Mos6526Model::Original, timing),
             nmi_cia: Mos6526::new_with_valid_timing(Mos6526Model::Original, timing),
             vic: VicII::new(),
             sid: Sid::new_with_valid_rates(sid_model, sid_clock_hz, DEFAULT_SAMPLE_RATE_HZ),
             iec_bus,
             iec_host_port,
+            iec_reset_asserted: false,
+            drive1541: None,
             cartridge_lines: CartridgeLines::DISCONNECTED,
             processor_port_output: ProcessorPortOutputState {
                 direction: 0,
@@ -125,6 +169,47 @@ impl C64Chipset {
         &mut self.iec_bus
     }
 
+    pub const fn drive1541(&self) -> Option<&Commodore1541Drive> {
+        self.drive1541.as_ref()
+    }
+
+    pub const fn drive1541_mut(&mut self) -> Option<&mut Commodore1541Drive> {
+        self.drive1541.as_mut()
+    }
+
+    /// Attach one explicitly configured 1541 to this board's shared IEC bus.
+    ///
+    /// # Errors
+    ///
+    /// Rejects duplicate attachment and propagates drive construction errors.
+    pub fn attach_drive1541(
+        &mut self,
+        device_number: u8,
+        rom: &[u8],
+    ) -> Result<(), C64ChipsetError> {
+        if self.drive1541.is_some() {
+            return Err(C64ChipsetError::Drive1541AlreadyAttached);
+        }
+        let drive =
+            Commodore1541Drive::new(device_number, rom, self.video_standard, &mut self.iec_bus)?;
+        self.drive1541 = Some(drive);
+        Ok(())
+    }
+
+    /// Detach the configured 1541 and release its IEC port.
+    ///
+    /// # Errors
+    ///
+    /// Rejects an empty drive slot and propagates IEC detach errors.
+    pub fn detach_drive1541(&mut self) -> Result<(), C64ChipsetError> {
+        let drive = self
+            .drive1541
+            .take()
+            .ok_or(C64ChipsetError::Drive1541NotAttached)?;
+        drive.disconnect(&mut self.iec_bus)?;
+        Ok(())
+    }
+
     pub const fn ba_low(&self) -> bool {
         self.vic.ba_low()
     }
@@ -143,12 +228,17 @@ impl C64Chipset {
 
     /// # Errors
     ///
-    /// VIC 半周期计划出现内部不一致时返回显式错误。
-    pub fn clock_system_cycle<M: VicMemoryBus>(&mut self, memory: &mut M) -> Result<(), VicError> {
+    /// VIC 半周期计划或 1541 调度出现内部不一致时返回显式错误。
+    pub fn clock_system_cycle<M: VicMemoryBus>(
+        &mut self,
+        memory: &mut M,
+    ) -> Result<(), C64ChipsetError> {
         self.clock_cias();
-        let result = self.clock_vic(memory);
+        let vic_result = self.clock_vic(memory);
         self.clock_sid();
-        result
+        let drive_result = self.clock_drive1541();
+        vic_result?;
+        drive_result
     }
 
     pub(crate) fn clock_cias(&mut self) {
@@ -165,14 +255,51 @@ impl C64Chipset {
         self.sid.clock_cycle();
     }
 
-    pub fn reset(&mut self) {
+    pub(crate) fn clock_drive1541(&mut self) -> Result<(), C64ChipsetError> {
+        if let Some(drive) = self.drive1541.as_mut() {
+            drive.clock_host_cycle(&mut self.iec_bus)?;
+        }
+        Ok(())
+    }
+
+    /// Pulse the board RESET line and reset every attached chip and drive.
+    ///
+    /// # Errors
+    ///
+    /// Propagates a drive error after always releasing the IEC RESET line.
+    pub fn reset(&mut self) -> Result<(), C64ChipsetError> {
+        let drive_reset_result = self.set_iec_reset_asserted(true);
         self.irq_cia.reset();
         self.nmi_cia.reset();
         self.vic.reset();
         self.sid.reset();
-        self.update_iec_host_outputs(false);
+        let release_result = self.set_iec_reset_asserted(false);
         self.synchronize_light_pen_input();
         self.last_cpu_read_was_held = false;
+        drive_reset_result?;
+        release_result
+    }
+
+    pub(crate) fn reinitialize_host(
+        &mut self,
+        video_standard: VideoStandard,
+        sid_model: SidModel,
+    ) -> Result<(), C64ChipsetError> {
+        let fresh = Self::new_with_sid_model(video_standard, sid_model);
+        self.video_standard = fresh.video_standard;
+        self.irq_cia = fresh.irq_cia;
+        self.nmi_cia = fresh.nmi_cia;
+        self.vic = fresh.vic;
+        self.sid = fresh.sid;
+        self.cartridge_lines = fresh.cartridge_lines;
+        self.processor_port_output = fresh.processor_port_output;
+        self.last_cpu_read_was_held = false;
+        self.iec_reset_asserted = false;
+        self.update_iec_host_outputs();
+        if let Some(drive) = self.drive1541.as_mut() {
+            drive.reconfigure_host_clock(video_standard);
+        }
+        self.reset()
     }
 
     pub fn vic_bank_address(&self) -> u16 {
@@ -200,7 +327,19 @@ impl C64Chipset {
             }
     }
 
-    fn update_iec_host_outputs(&mut self, reset_asserted: bool) {
+    fn set_iec_reset_asserted(&mut self, asserted: bool) -> Result<(), C64ChipsetError> {
+        if self.iec_reset_asserted == asserted {
+            return Ok(());
+        }
+        self.iec_reset_asserted = asserted;
+        self.update_iec_host_outputs();
+        if asserted && let Some(drive) = self.drive1541.as_mut() {
+            drive.synchronize_iec_reset(&mut self.iec_bus)?;
+        }
+        Ok(())
+    }
+
+    fn update_iec_host_outputs(&mut self) {
         let asserted = self.nmi_cia.port_a_output_latch() & self.nmi_cia.port_a_data_direction();
         let mut low_mask = 0;
         if asserted & CIA2_IEC_ATTENTION_OUTPUT != 0 {
@@ -212,7 +351,7 @@ impl C64Chipset {
         if asserted & CIA2_IEC_DATA_OUTPUT != 0 {
             low_mask |= IecLine::Data.mask();
         }
-        if reset_asserted {
+        if self.iec_reset_asserted {
             low_mask |= IecLine::Reset.mask();
         }
         let result = self.iec_bus.set_port_low_mask(self.iec_host_port, low_mask);
@@ -250,7 +389,7 @@ impl C64BusDevices for C64Chipset {
             0xdc => self.irq_cia.write(address, value),
             0xdd => {
                 self.nmi_cia.write(address, value);
-                self.update_iec_host_outputs(false);
+                self.update_iec_host_outputs();
             }
             _ => {}
         }

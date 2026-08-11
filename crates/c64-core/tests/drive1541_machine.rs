@@ -42,7 +42,7 @@ fn create_machine(program: &[u8]) -> (IecBus, Drive1541Machine) {
     let iec_via = Drive1541IecVia::new(8, &mut bus).unwrap();
     let disk_via = Drive1541DiskVia::new(8, &mut mechanism).unwrap();
     let memory = Drive1541Memory::new(&rom, iec_via, disk_via).unwrap();
-    let machine = Drive1541Machine::new(memory, mechanism, &mut bus).unwrap();
+    let machine = Drive1541Machine::new(memory, mechanism);
     (bus, machine)
 }
 

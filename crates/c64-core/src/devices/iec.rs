@@ -117,6 +117,7 @@ pub struct IecBus {
     attached_mask: u8,
     aggregate_low_mask: u8,
     transition_sequence: u64,
+    reset_assertion_sequence: u64,
 }
 
 impl Default for IecBus {
@@ -133,6 +134,7 @@ impl IecBus {
             attached_mask: 0,
             aggregate_low_mask: 0,
             transition_sequence: 0,
+            reset_assertion_sequence: 0,
         }
     }
 
@@ -157,6 +159,14 @@ impl IecBus {
 
     pub const fn transition_sequence(&self) -> u64 {
         self.transition_sequence
+    }
+
+    /// Number of aggregate RESET high-to-low transitions observed by the bus.
+    ///
+    /// Devices sample this monotonic sequence instead of only the current line
+    /// level, so a complete pulse between two device clocks cannot be lost.
+    pub const fn reset_assertion_sequence(&self) -> u64 {
+        self.reset_assertion_sequence
     }
 
     pub const fn line_high(&self, line: IecLine) -> bool {
@@ -277,6 +287,9 @@ impl IecBus {
         }
         self.aggregate_low_mask = next;
         self.transition_sequence = self.transition_sequence.wrapping_add(1);
+        if changed_mask & IecLine::Reset.mask() != 0 && next & IecLine::Reset.mask() != 0 {
+            self.reset_assertion_sequence = self.reset_assertion_sequence.wrapping_add(1);
+        }
         Some(IecBusTransition {
             changed_mask,
             sequence: self.transition_sequence,
