@@ -11,3 +11,4 @@
 pub mod d64_gcr;
 pub mod gcr;
 pub mod iec_via;
+pub mod mechanism;
