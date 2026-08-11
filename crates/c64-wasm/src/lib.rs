@@ -16,6 +16,7 @@
     allow(linker_messages)
 )]
 
+use c64_core::media::tap::TapVideoStandard;
 use c64_core::{
     C64Core, CoreConfig, CoreError, MachineProfile, MemoryWriteSource, PacingMode, SidModel,
     VideoStandard,
@@ -161,6 +162,124 @@ impl C64Vm {
 
     pub fn memory_generation_low(&self) -> u32 {
         low_u32(self.core.memory().memory_generation())
+    }
+
+    /// Parse and insert a read-only TAP image. A zero legacy duration means
+    /// that ambiguous TAP v0 zero markers remain rejected.
+    ///
+    /// # Errors
+    ///
+    /// Rejects malformed media, duplicate insertion or a moving transport.
+    pub fn insert_tap(
+        &mut self,
+        bytes: &[u8],
+        legacy_v0_overflow_pulse_cycles: u32,
+    ) -> Result<(), JsError> {
+        let legacy_duration =
+            (legacy_v0_overflow_pulse_cycles != 0).then_some(legacy_v0_overflow_pulse_cycles);
+        self.core
+            .insert_tap(bytes, legacy_duration)
+            .map_err(to_js_error)
+    }
+
+    /// Insert an empty writable TAP v1 image.
+    ///
+    /// # Errors
+    ///
+    /// Rejects an invalid TAP video-standard code or duplicate media.
+    pub fn insert_blank_tap(&mut self, video_standard: u8) -> Result<(), JsError> {
+        let video_standard = TapVideoStandard::try_from(video_standard)
+            .map_err(|error| JsError::new(&error.to_string()))?;
+        self.core
+            .insert_blank_tap(video_standard)
+            .map_err(to_js_error)
+    }
+
+    /// Serialize and eject stopped media in one coarse ABI call.
+    ///
+    /// # Errors
+    ///
+    /// Requires stopped mounted media.
+    pub fn eject_tap(&mut self) -> Result<Vec<u8>, JsError> {
+        self.core.eject_tap().map_err(to_js_error)
+    }
+
+    /// Engage the physical PLAY key.
+    ///
+    /// # Errors
+    ///
+    /// Rejects an internal CPU slot.
+    pub fn tape_play(&mut self) -> Result<(), JsError> {
+        self.core.tape_play().map_err(to_js_error)
+    }
+
+    /// Engage the physical RECORD key.
+    ///
+    /// # Errors
+    ///
+    /// Requires stopped writable media.
+    pub fn tape_record(&mut self) -> Result<(), JsError> {
+        self.core.tape_record().map_err(to_js_error)
+    }
+
+    /// Stop the physical transport.
+    ///
+    /// # Errors
+    ///
+    /// Rejects an internal CPU slot.
+    pub fn tape_stop(&mut self) -> Result<(), JsError> {
+        self.core.tape_stop().map_err(to_js_error)
+    }
+
+    /// Rewind mounted media.
+    ///
+    /// # Errors
+    ///
+    /// Requires stopped mounted media.
+    pub fn tape_rewind(&mut self) -> Result<(), JsError> {
+        self.core.tape_rewind().map_err(to_js_error)
+    }
+
+    /// Seek to a physical TAP pulse boundary.
+    ///
+    /// # Errors
+    ///
+    /// Requires stopped mounted media and an in-range index.
+    pub fn tape_seek_pulse(&mut self, pulse_index: u32) -> Result<(), JsError> {
+        self.core
+            .tape_seek_pulse(
+                usize::try_from(pulse_index)
+                    .map_err(|_| JsError::new("TAP pulse index exceeds the host address range"))?,
+            )
+            .map_err(to_js_error)
+    }
+
+    pub fn tape_mounted(&self) -> bool {
+        self.core.tape_mounted()
+    }
+
+    pub fn tape_writable(&self) -> bool {
+        self.core.tape_writable()
+    }
+
+    pub fn tape_pulse_count(&self) -> u32 {
+        u32::try_from(self.core.tape_pulse_count()).unwrap_or(u32::MAX)
+    }
+
+    pub fn tape_pulse_index(&self) -> u32 {
+        u32::try_from(self.core.tape_pulse_index()).unwrap_or(u32::MAX)
+    }
+
+    pub fn tape_transport(&self) -> u8 {
+        self.core.tape_transport().code()
+    }
+
+    pub fn tape_motor_active(&self) -> bool {
+        self.core.tape_motor_active()
+    }
+
+    pub fn tape_sense_switch_closed(&self) -> bool {
+        self.core.tape_sense_switch_closed()
     }
 
     pub fn save_state(&self) -> Vec<u8> {

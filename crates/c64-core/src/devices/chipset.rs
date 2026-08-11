@@ -12,7 +12,7 @@ use core::fmt;
 
 use crate::address_space::{C64BusDevices, CartridgeLines};
 use crate::architecture::VideoStandard;
-use crate::processor_port::ProcessorPortOutputState;
+use crate::processor_port::{ProcessorPortInputState, ProcessorPortOutputState};
 
 use super::cia::{Mos6526, Mos6526Model, Mos6526Timing};
 use super::drive1541::drive::{Commodore1541Drive, Commodore1541DriveError};
@@ -20,9 +20,13 @@ use super::iec::{IecBus, IecLine, IecPort};
 use super::sid::{
     DEFAULT_SAMPLE_RATE_HZ, NTSC_PROCESSOR_CLOCK_HZ, PAL_PROCESSOR_CLOCK_HZ, Sid, SidModel,
 };
+use super::tape::{Commodore1530Datasette, DatasetteError, DatasetteHostSignals};
 use super::vic::{VicError, VicII, VicMemoryBus};
 
 const CIA1_PORT_B_LIGHT_PEN_INPUT: u8 = 1 << 4;
+const PROCESSOR_PORT_CASSETTE_WRITE: u8 = 1 << 3;
+const PROCESSOR_PORT_CASSETTE_SENSE: u8 = 1 << 4;
+const PROCESSOR_PORT_CASSETTE_MOTOR: u8 = 1 << 5;
 const CIA2_IEC_ATTENTION_OUTPUT: u8 = 1 << 3;
 const CIA2_IEC_CLOCK_OUTPUT: u8 = 1 << 4;
 const CIA2_IEC_DATA_OUTPUT: u8 = 1 << 5;
@@ -32,6 +36,7 @@ const CIA2_NON_IEC_INPUTS_HIGH: u8 = 0x3f;
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum C64ChipsetError {
+    Datasette(DatasetteError),
     Drive1541(Commodore1541DriveError),
     Drive1541AlreadyAttached,
     Drive1541NotAttached,
@@ -41,6 +46,7 @@ pub enum C64ChipsetError {
 impl fmt::Display for C64ChipsetError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
+            Self::Datasette(error) => error.fmt(formatter),
             Self::Drive1541(error) => error.fmt(formatter),
             Self::Drive1541AlreadyAttached => {
                 formatter.write_str("a Commodore 1541 is already attached")
@@ -52,6 +58,12 @@ impl fmt::Display for C64ChipsetError {
 }
 
 impl std::error::Error for C64ChipsetError {}
+
+impl From<DatasetteError> for C64ChipsetError {
+    fn from(error: DatasetteError) -> Self {
+        Self::Datasette(error)
+    }
+}
 
 impl From<Commodore1541DriveError> for C64ChipsetError {
     fn from(error: Commodore1541DriveError) -> Self {
@@ -77,6 +89,9 @@ pub struct C64Chipset {
     iec_host_port: IecPort,
     iec_reset_asserted: bool,
     drive1541: Option<Commodore1541Drive>,
+    datasette: Commodore1530Datasette,
+    pending_datasette_error: Option<DatasetteError>,
+    tape_read_line_high: bool,
     cartridge_lines: CartridgeLines,
     processor_port_output: ProcessorPortOutputState,
     last_cpu_read_was_held: bool,
@@ -107,6 +122,11 @@ impl C64Chipset {
             iec_host_port,
             iec_reset_asserted: false,
             drive1541: None,
+            datasette: Commodore1530Datasette::new_with_valid_target_clock(
+                video_standard.system_clock_hz(),
+            ),
+            pending_datasette_error: None,
+            tape_read_line_high: true,
             cartridge_lines: CartridgeLines::DISCONNECTED,
             processor_port_output: ProcessorPortOutputState {
                 direction: 0,
@@ -177,6 +197,14 @@ impl C64Chipset {
         self.drive1541.as_mut()
     }
 
+    pub const fn datasette(&self) -> &Commodore1530Datasette {
+        &self.datasette
+    }
+
+    pub const fn datasette_mut(&mut self) -> &mut Commodore1530Datasette {
+        &mut self.datasette
+    }
+
     /// Attach one explicitly configured 1541 to this board's shared IEC bus.
     ///
     /// # Errors
@@ -233,12 +261,25 @@ impl C64Chipset {
         &mut self,
         memory: &mut M,
     ) -> Result<(), C64ChipsetError> {
+        let datasette_result = self.clock_datasette();
         self.clock_cias();
         let vic_result = self.clock_vic(memory);
         self.clock_sid();
         let drive_result = self.clock_drive1541();
+        datasette_result?;
         vic_result?;
         drive_result
+    }
+
+    pub(crate) fn clock_datasette(&mut self) -> Result<(), C64ChipsetError> {
+        if let Some(error) = self.pending_datasette_error.take() {
+            return Err(error.into());
+        }
+        let result = self.datasette.clock_cycle()?;
+        for _ in 0..result.read_pulses {
+            self.pulse_tape_read_line();
+        }
+        Ok(())
     }
 
     pub(crate) fn clock_cias(&mut self) {
@@ -256,10 +297,13 @@ impl C64Chipset {
     }
 
     pub(crate) fn clock_drive1541(&mut self) -> Result<(), C64ChipsetError> {
-        if let Some(drive) = self.drive1541.as_mut() {
-            drive.clock_host_cycle(&mut self.iec_bus)?;
-        }
-        Ok(())
+        let result = if let Some(drive) = self.drive1541.as_mut() {
+            drive.clock_host_cycle(&mut self.iec_bus).map(|_| ())
+        } else {
+            Ok(())
+        };
+        self.synchronize_cia1_flag_input();
+        result.map_err(Into::into)
     }
 
     /// Pulse the board RESET line and reset every attached chip and drive.
@@ -275,6 +319,7 @@ impl C64Chipset {
         self.sid.reset();
         let release_result = self.set_iec_reset_asserted(false);
         self.synchronize_light_pen_input();
+        self.synchronize_cia1_flag_input();
         self.last_cpu_read_was_held = false;
         drive_reset_result?;
         release_result
@@ -293,12 +338,18 @@ impl C64Chipset {
         self.sid = fresh.sid;
         self.cartridge_lines = fresh.cartridge_lines;
         self.processor_port_output = fresh.processor_port_output;
+        self.pending_datasette_error = None;
+        self.tape_read_line_high = true;
         self.last_cpu_read_was_held = false;
         self.iec_reset_asserted = false;
         self.update_iec_host_outputs();
         if let Some(drive) = self.drive1541.as_mut() {
             drive.reconfigure_host_clock(video_standard);
         }
+        self.datasette
+            .reconfigure_target_clock(video_standard.system_clock_hz())?;
+        self.datasette
+            .set_host_signals(Self::datasette_host_signals(self.processor_port_output))?;
         self.reset()
     }
 
@@ -310,6 +361,26 @@ impl C64Chipset {
         self.vic.set_light_pen_input_high(
             self.irq_cia.port_b_output_pins() & CIA1_PORT_B_LIGHT_PEN_INPUT != 0,
         );
+    }
+
+    fn pulse_tape_read_line(&mut self) {
+        self.tape_read_line_high = false;
+        self.synchronize_cia1_flag_input();
+        self.tape_read_line_high = true;
+        self.synchronize_cia1_flag_input();
+    }
+
+    fn synchronize_cia1_flag_input(&mut self) {
+        self.irq_cia.set_flag_pin_high(
+            self.tape_read_line_high && self.iec_bus.state().service_request_high(),
+        );
+    }
+
+    const fn datasette_host_signals(state: ProcessorPortOutputState) -> DatasetteHostSignals {
+        DatasetteHostSignals {
+            motor_active: state.output_pins & PROCESSOR_PORT_CASSETTE_MOTOR == 0,
+            write_high: state.output_pins & PROCESSOR_PORT_CASSETTE_WRITE != 0,
+        }
     }
 
     fn cia2_port_a_external_inputs(&self) -> u8 {
@@ -399,12 +470,29 @@ impl C64BusDevices for C64Chipset {
         self.last_cpu_read_was_held
     }
 
+    fn processor_port_input_state(&self) -> ProcessorPortInputState {
+        ProcessorPortInputState {
+            mask: PROCESSOR_PORT_CASSETTE_SENSE,
+            value: if self.datasette.sense_switch_closed() {
+                0
+            } else {
+                PROCESSOR_PORT_CASSETTE_SENSE
+            },
+        }
+    }
+
     fn open_bus_value(&self) -> u8 {
         self.vic.phi1_data_bus_value()
     }
 
     fn processor_port_output_changed(&mut self, state: ProcessorPortOutputState) {
         self.processor_port_output = state;
+        if let Err(error) = self
+            .datasette
+            .set_host_signals(Self::datasette_host_signals(state))
+        {
+            self.pending_datasette_error.get_or_insert(error);
+        }
     }
 }
 

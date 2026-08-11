@@ -18,7 +18,12 @@ use crate::{
     },
     clock::{VirtualClock, VirtualClockError, VirtualTimestamp},
     cpu::{Cpu6510, Cpu6510Error, Cpu6510State, CpuBus, CpuIrqLine, CpuNmiLine},
-    devices::{C64Chipset, C64ChipsetError, vic::VicError},
+    devices::{
+        C64Chipset, C64ChipsetError,
+        tape::{DatasetteError, DatasetteTape, DatasetteTransport},
+        vic::VicError,
+    },
+    media::tap::{TapImage, TapImageError, TapVideoStandard, WritableTapImage},
     memory::{CoherentMemory, MemoryWriteSource},
     state::{self, StateError, StateImage},
 };
@@ -174,6 +179,160 @@ impl C64Core {
         self.devices
             .drive1541_mut()
             .ok_or(C64ChipsetError::Drive1541NotAttached.into())
+    }
+
+    /// Borrow the physical Datasette at a system-cycle boundary for coarse
+    /// media and transport operations.
+    ///
+    /// # Errors
+    ///
+    /// Rejects an internal CPU slot.
+    pub fn datasette_mut(
+        &mut self,
+    ) -> Result<&mut crate::devices::tape::Commodore1530Datasette, CoreError> {
+        self.clock.advance_system_cycles(0)?;
+        Ok(self.devices.datasette_mut())
+    }
+
+    /// Parse and insert one read-only TAP image at a system-cycle boundary.
+    ///
+    /// # Errors
+    ///
+    /// Rejects malformed media, duplicate insertion, a moving transport or an
+    /// internal CPU slot.
+    pub fn insert_tap(
+        &mut self,
+        bytes: &[u8],
+        legacy_v0_overflow_pulse_cycles: Option<u32>,
+    ) -> Result<(), CoreError> {
+        self.clock.advance_system_cycles(0)?;
+        let image = TapImage::parse(bytes, legacy_v0_overflow_pulse_cycles)?;
+        self.devices
+            .datasette_mut()
+            .insert_tape(DatasetteTape::ReadOnly(image))?;
+        Ok(())
+    }
+
+    /// Insert an empty writable TAP v1 image at a system-cycle boundary.
+    ///
+    /// # Errors
+    ///
+    /// Rejects duplicate insertion, a moving transport or an internal CPU slot.
+    pub fn insert_blank_tap(&mut self, video_standard: TapVideoStandard) -> Result<(), CoreError> {
+        self.clock.advance_system_cycles(0)?;
+        self.devices
+            .datasette_mut()
+            .insert_tape(DatasetteTape::Writable(WritableTapImage::new(
+                video_standard,
+            )))?;
+        Ok(())
+    }
+
+    /// Serialize and eject the mounted TAP image atomically.
+    ///
+    /// # Errors
+    ///
+    /// Requires mounted media, a stopped transport and a system-cycle boundary.
+    pub fn eject_tap(&mut self) -> Result<Vec<u8>, CoreError> {
+        self.clock.advance_system_cycles(0)?;
+        let bytes = self
+            .devices
+            .datasette()
+            .mounted_tape()
+            .ok_or(DatasetteError::TapeNotInserted)?
+            .to_bytes()?;
+        self.devices.datasette_mut().eject_tape()?;
+        Ok(bytes)
+    }
+
+    /// Engage the physical PLAY key at a system-cycle boundary.
+    ///
+    /// # Errors
+    ///
+    /// Rejects an internal CPU slot.
+    pub fn tape_play(&mut self) -> Result<(), CoreError> {
+        self.clock.advance_system_cycles(0)?;
+        self.devices.datasette_mut().press_play();
+        Ok(())
+    }
+
+    /// Engage the physical RECORD key at a system-cycle boundary.
+    ///
+    /// # Errors
+    ///
+    /// Requires stopped writable media and a system-cycle boundary.
+    pub fn tape_record(&mut self) -> Result<(), CoreError> {
+        self.clock.advance_system_cycles(0)?;
+        self.devices.datasette_mut().press_record()?;
+        Ok(())
+    }
+
+    /// Stop the physical transport at a system-cycle boundary.
+    ///
+    /// # Errors
+    ///
+    /// Rejects an internal CPU slot.
+    pub fn tape_stop(&mut self) -> Result<(), CoreError> {
+        self.clock.advance_system_cycles(0)?;
+        self.devices.datasette_mut().press_stop();
+        Ok(())
+    }
+
+    /// Rewind mounted media at a system-cycle boundary.
+    ///
+    /// # Errors
+    ///
+    /// Requires stopped mounted media and a system-cycle boundary.
+    pub fn tape_rewind(&mut self) -> Result<(), CoreError> {
+        self.clock.advance_system_cycles(0)?;
+        self.devices.datasette_mut().rewind_to_start()?;
+        Ok(())
+    }
+
+    /// Seek to a TAP pulse boundary.
+    ///
+    /// # Errors
+    ///
+    /// Requires stopped mounted media, an in-range index and a system-cycle
+    /// boundary.
+    pub fn tape_seek_pulse(&mut self, pulse_index: usize) -> Result<(), CoreError> {
+        self.clock.advance_system_cycles(0)?;
+        self.devices.datasette_mut().seek_pulse(pulse_index)?;
+        Ok(())
+    }
+
+    pub const fn tape_mounted(&self) -> bool {
+        self.devices.datasette().mounted_tape().is_some()
+    }
+
+    pub const fn tape_writable(&self) -> bool {
+        match self.devices.datasette().mounted_tape() {
+            Some(tape) => tape.writable(),
+            None => false,
+        }
+    }
+
+    pub fn tape_pulse_count(&self) -> usize {
+        self.devices
+            .datasette()
+            .mounted_tape()
+            .map_or(0, |tape| tape.pulses().len())
+    }
+
+    pub const fn tape_pulse_index(&self) -> usize {
+        self.devices.datasette().pulse_index()
+    }
+
+    pub const fn tape_transport(&self) -> DatasetteTransport {
+        self.devices.datasette().transport()
+    }
+
+    pub const fn tape_motor_active(&self) -> bool {
+        self.devices.datasette().motor_active()
+    }
+
+    pub const fn tape_sense_switch_closed(&self) -> bool {
+        self.devices.datasette().sense_switch_closed()
     }
 
     /// 在下一个公开提交边界应用执行请求。
@@ -473,6 +632,14 @@ impl<'a> ClockedCpuBus<'a> {
 
     fn clock_hardware_cycle(&mut self, cpu_read_address: Option<u16>) {
         self.address_space.tick_processor_port(1);
+        let result = self.devices.clock_datasette();
+        if let Err(error) = result
+            && self.hardware_error.is_none()
+        {
+            self.hardware_error = Some(error);
+        }
+        self.address_space
+            .synchronize_processor_port_inputs(self.devices.processor_port_input_state());
         self.devices.clock_cias();
         if let Some(address) = cpu_read_address {
             self.address_space
@@ -589,6 +756,18 @@ impl From<C64ChipsetError> for CoreError {
             C64ChipsetError::Vic(error) => Self::Vic(error),
             other => Self::Chipset(other),
         }
+    }
+}
+
+impl From<DatasetteError> for CoreError {
+    fn from(error: DatasetteError) -> Self {
+        Self::Chipset(error.into())
+    }
+}
+
+impl From<TapImageError> for CoreError {
+    fn from(error: TapImageError) -> Self {
+        Self::from(DatasetteError::from(error))
     }
 }
 

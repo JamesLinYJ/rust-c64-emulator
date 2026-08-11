@@ -19,6 +19,12 @@ pub struct ProcessorPortOutputState {
     pub output_pins: u8,
 }
 
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct ProcessorPortInputState {
+    pub mask: u8,
+    pub value: u8,
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct ProcessorPort6510 {
     direction: u8,

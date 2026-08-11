@@ -16,7 +16,7 @@ use crate::memory::{
     BASE_PAGE_COUNT, CoherentMemory, MemoryWriteSource, PageDescriptor, PhysicalTarget,
 };
 use crate::pla::{C64Pla, PlaInputs, PlaTarget, configuration_code};
-use crate::processor_port::{ProcessorPort6510, ProcessorPortOutputState};
+use crate::processor_port::{ProcessorPort6510, ProcessorPortInputState, ProcessorPortOutputState};
 
 pub const BASIC_ROM_BYTES: usize = 0x2000;
 pub const CHARACTER_ROM_BYTES: usize = 0x1000;
@@ -79,6 +79,10 @@ pub trait C64BusDevices {
 
     fn cpu_read_was_held(&self) -> bool {
         false
+    }
+
+    fn processor_port_input_state(&self) -> ProcessorPortInputState {
+        ProcessorPortInputState::default()
     }
 
     fn processor_port_output_changed(&mut self, _state: ProcessorPortOutputState) {}
@@ -227,6 +231,10 @@ impl C64AddressSpace {
 
     pub fn tick_processor_port(&mut self, cycles: u32) {
         self.processor_port.tick(cycles);
+    }
+
+    pub(crate) fn synchronize_processor_port_inputs(&mut self, state: ProcessorPortInputState) {
+        self.processor_port.set_input_pins(state.mask, state.value);
     }
 
     /// 让当前 CPU 读地址在 VIC 的 φ2 C-access 前无副作用地驱动数据总线。
@@ -431,6 +439,8 @@ impl<D: C64BusDevices> C64CpuBus<'_, D> {
 
 impl<D: C64BusDevices> CpuBus for C64CpuBus<'_, D> {
     fn read(&mut self, address: u16) -> u8 {
+        self.address_space
+            .synchronize_processor_port_inputs(self.devices.processor_port_input_state());
         let value = if address == 0x0000 {
             self.address_space.processor_port.direction_register()
         } else if address == 0x0001 {

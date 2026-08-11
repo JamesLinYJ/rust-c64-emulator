@@ -51,5 +51,5 @@ pub use memory::{
     BASE_RAM_BYTES, CoherentMemory, MemoryWriteSource, PageDescriptor, PageDomain, PhysicalTarget,
 };
 pub use pla::{C64Pla, CartridgeMode, PlaInputs, PlaTarget};
-pub use processor_port::{ProcessorPort6510, ProcessorPortOutputState};
+pub use processor_port::{ProcessorPort6510, ProcessorPortInputState, ProcessorPortOutputState};
 pub use state::{SAVE_STATE_FORMAT_VERSION, StateError};

@@ -16,18 +16,33 @@ interface C64VmInstance {
   awaiting_auto_calibration(): boolean;
   current_slot(): number;
   effective_slots_per_system_cycle(): number;
+  eject_tap(): Uint8Array;
   elapsed_system_cycles_high(): number;
   elapsed_system_cycles_low(): number;
   free(): void;
   load_state(bytes: Uint8Array): void;
   lock_auto_turbo(resolvedSlotsPerSystemCycle: number): void;
   memory_generation_low(): number;
+  insert_blank_tap(videoStandard: number): void;
+  insert_tap(bytes: Uint8Array, legacyV0OverflowPulseCycles: number): void;
   read_base_ram(address: number): number;
   request_auto_turbo(maximumSlotsPerSystemCycle: number): void;
   reset(): void;
   run_cpu_slots(slots: number): number;
   save_state(): Uint8Array;
   set_manual_turbo(slotsPerSystemCycle: number): void;
+  tape_mounted(): boolean;
+  tape_motor_active(): boolean;
+  tape_play(): void;
+  tape_pulse_count(): number;
+  tape_pulse_index(): number;
+  tape_record(): void;
+  tape_rewind(): void;
+  tape_seek_pulse(pulseIndex: number): void;
+  tape_sense_switch_closed(): boolean;
+  tape_stop(): void;
+  tape_transport(): number;
+  tape_writable(): boolean;
   write_base_ram(address: number, value: number): void;
 }
 
@@ -59,6 +74,36 @@ try {
   source.write_base_ram(0xc000, 0x5a);
   assert.equal(source.read_base_ram(0xc000), 0x5a);
   assert.equal((source.memory_generation_low() - generationBeforeHostWrite) >>> 0, 1);
+
+  assert.throws(() => source.insert_tap(Uint8Array.of(0), 0), /20-byte header/u);
+  assert.equal(source.tape_mounted(), false, '失败的 TAP 插入必须保持空仓');
+  const readOnlyTap = createTap(Uint8Array.of(2, 3));
+  source.insert_tap(readOnlyTap, 0);
+  assert.equal(source.tape_mounted(), true);
+  assert.equal(source.tape_writable(), false);
+  assert.equal(source.tape_pulse_count(), 2);
+  source.tape_play();
+  assert.equal(source.tape_transport(), 1);
+  assert.equal(source.tape_sense_switch_closed(), true);
+  assert.throws(() => source.eject_tap(), /stop/u);
+  source.tape_stop();
+  source.tape_seek_pulse(1);
+  assert.equal(source.tape_pulse_index(), 1);
+  source.tape_rewind();
+  assert.equal(source.tape_pulse_index(), 0);
+  assert.deepEqual(source.eject_tap(), readOnlyTap);
+  assert.equal(source.tape_mounted(), false);
+
+  assert.throws(() => source.insert_blank_tap(255), /video standard/u);
+  source.insert_blank_tap(0);
+  assert.equal(source.tape_writable(), true);
+  source.tape_record();
+  assert.equal(source.tape_transport(), 2);
+  source.tape_stop();
+  const blankTap = source.eject_tap();
+  assert.equal(blankTap.length, 20);
+  assert.equal(blankTap[12], 1);
+  assert.equal(blankTap[14], 0);
   const state = source.save_state();
 
   restored.write_base_ram(0xc000, 0x33);
@@ -85,7 +130,7 @@ try {
   restored.free();
 }
 
-console.log('Wasm ABI 安全验证通过：边界输入、状态原子性、Turbo 与 64 KiB RAM 均符合契约。');
+console.log('Wasm ABI 安全验证通过：边界输入、状态原子性、Tape、Turbo 与 64 KiB RAM 均符合契约。');
 
 function assertC64WasmModule(value: unknown): asserts value is C64WasmModule {
   if (
@@ -96,4 +141,15 @@ function assertC64WasmModule(value: unknown): asserts value is C64WasmModule {
   ) {
     throw new TypeError('生成的 Node Wasm 模块没有导出 C64Vm 构造器。');
   }
+}
+
+function createTap(data: Uint8Array): Uint8Array {
+  const bytes = new Uint8Array(20 + data.length);
+  bytes.set(Uint8Array.from('C64-TAPE-RAW', (character) => character.charCodeAt(0)));
+  bytes[12] = 1;
+  bytes[13] = 0;
+  bytes[14] = 0;
+  new DataView(bytes.buffer).setUint32(16, data.length, true);
+  bytes.set(data, 20);
+  return bytes;
 }

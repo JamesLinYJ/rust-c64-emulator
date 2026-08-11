@@ -10,3 +10,4 @@
 
 pub mod d64;
 pub mod g64;
+pub mod tap;
