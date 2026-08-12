@@ -1,0 +1,20 @@
+[package]
+name = "c64-core"
+description = "Deterministic machine core for Rust C64 Emulator"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+license-file.workspace = true
+repository.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+wincode = { version = "=0.6.1", features = ["derive"] }
+
+[dev-dependencies]
+serde = { version = "1.0.228", features = ["derive"] }
+serde_json = "1.0.149"
+sha2 = "0.10.9"

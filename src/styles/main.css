@@ -38,7 +38,8 @@ body {
 
 button,
 select,
-input {
+input,
+textarea {
   font: inherit;
 }
 
@@ -46,7 +47,8 @@ button:focus-visible,
 a:focus-visible,
 select:focus-visible,
 input:focus-visible,
-.screen-frame:focus-visible {
+.screen-frame:focus-visible,
+.screen-frame:focus-within {
   outline: 3px solid rgb(37 112 232 / 32%);
   outline-offset: 3px;
 }
@@ -369,6 +371,7 @@ svg {
 }
 
 .screen-frame {
+  position: relative;
   min-height: clamp(25rem, 31vw, 32.8rem);
   padding: clamp(1rem, 1.5vw, 1.5rem);
   display: grid;
@@ -382,6 +385,23 @@ svg {
     0 4px 0 #08090b,
     0 0.8rem 1.4rem rgb(15 17 24 / 18%);
   cursor: pointer;
+}
+
+.c64-keyboard-capture {
+  position: absolute;
+  z-index: 3;
+  bottom: 0;
+  left: 50%;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  overflow: hidden;
+  border: 0;
+  opacity: 0;
+  resize: none;
+  pointer-events: none;
+  font-size: 16px;
+  transform: translateX(-50%);
 }
 
 .screen-host {

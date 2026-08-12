@@ -30,6 +30,11 @@ export interface KeyboardMatrixScanState {
 
 export type KeyboardMatrixObserver = () => void;
 
+export interface KeyboardMatrixSnapshot {
+  readonly rowsByColumn: Uint8Array;
+  readonly shiftLockPressed: boolean;
+}
+
 const MATRIX_SIDE_LENGTH = 8;
 const KEY_MATRIX = new Map<string, MatrixPosition>([
   ['KeyA', [2, 1]],
@@ -116,6 +121,13 @@ export class C64KeyboardMatrix {
 
   supportsKey(code: string): boolean {
     return KEY_MATRIX.has(code);
+  }
+
+  snapshot(): KeyboardMatrixSnapshot {
+    return {
+      rowsByColumn: this.pressedRowsByColumn.slice(),
+      shiftLockPressed: this.pressedCodes.has('ShiftLock'),
+    };
   }
 
   releaseAll(): void {

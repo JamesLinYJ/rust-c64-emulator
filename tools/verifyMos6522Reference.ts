@@ -28,6 +28,7 @@ import {
   Drive1541Memory,
 } from '../src/peripherals/drive1541/Drive1541Memory';
 import { IecBus, IEC_LINE } from '../src/peripherals/iec/IecBus';
+import { runRustJsonTrace } from './runRustJsonTrace';
 
 interface Mos6522ReferenceFile {
   readonly byteLength: number;
@@ -230,6 +231,10 @@ function viaAddress(register: number): number {
 interface ReplayProgram {
   readonly bytes: Uint8Array;
   readonly stopAddress: number;
+}
+
+interface RustReplayResult {
+  readonly samples: readonly number[];
 }
 
 function appendLoopBack(program: number[], loopAddress: number): void {
@@ -447,6 +452,33 @@ function replayReferenceCase(
   }
 }
 
+async function replayRustReferenceCases(
+  replays: readonly ReplayProgram[],
+): Promise<readonly Uint8Array[]> {
+  const results = await runRustJsonTrace<readonly RustReplayResult[]>({
+    example: 'vice_1541_via',
+    input: replays.map((replay) => ({
+      program: [...replay.bytes],
+      stopAddress: replay.stopAddress,
+    })),
+    label: 'Rust 1541 VIA replay',
+    maximumOutputBytes: 4 * 1024 * 1024,
+  });
+  if (results.length !== replays.length) {
+    throw new Error(
+      `Rust 1541 VIA replay returned ${results.length} cases for ${replays.length} requests.`,
+    );
+  }
+  return results.map((result, caseIndex) => {
+    if (result.samples.length !== REFERENCE_SAMPLE_COUNT) {
+      throw new Error(
+        `Rust 1541 VIA replay case ${caseIndex} returned ${result.samples.length} samples.`,
+      );
+    }
+    return Uint8Array.from(result.samples);
+  });
+}
+
 function formatDifference(expected: Uint8Array, actual: Uint8Array): string {
   const differences: string[] = [];
   for (let index = 0; index < expected.length && differences.length < 16; index += 1) {
@@ -478,27 +510,38 @@ async function loadFixtures<Reference extends Mos6522ReferenceFile>(
   );
 }
 
-function verifyFixtures<Reference extends Mos6522ReferenceFile>(
+async function verifyFixtures<Reference extends Mos6522ReferenceFile>(
   fixtures: readonly LoadedReference<Reference>[],
   buildReplay: (reference: Reference, caseIndex: number) => ReplayProgram,
-): number {
+): Promise<number> {
+  const replays = fixtures.flatMap((fixture) =>
+    fixture.cases.map((_expected, caseIndex) => buildReplay(fixture.reference, caseIndex)),
+  );
+  const rustResults = await replayRustReferenceCases(replays);
   let verifiedCases = 0;
+  let replayIndex = 0;
   for (const fixture of fixtures) {
     for (let caseIndex = 0; caseIndex < fixture.cases.length; caseIndex += 1) {
       const expected = fixture.cases[caseIndex];
       if (expected === undefined) throw new RangeError(`Missing reference case ${caseIndex}.`);
-      const actual = replayReferenceCase(
-        fixture.reference,
-        caseIndex,
-        buildReplay(fixture.reference, caseIndex),
-      );
+      const replay = replays[replayIndex];
+      const rustActual = rustResults[replayIndex];
+      if (!replay || !rustActual) throw new RangeError(`Missing VIA replay ${replayIndex}.`);
+      const actual = replayReferenceCase(fixture.reference, caseIndex, replay);
       const difference = formatDifference(expected, actual);
       if (difference.length > 0) {
         throw new Error(
           `VICE ${fixture.reference.file} case ${caseIndex} mismatch: ${difference}.`,
         );
       }
+      const rustDifference = formatDifference(expected, rustActual);
+      if (rustDifference.length > 0) {
+        throw new Error(
+          `Rust/VICE ${fixture.reference.file} case ${caseIndex} mismatch: ${rustDifference}.`,
+        );
+      }
       verifiedCases += 1;
+      replayIndex += 1;
     }
   }
   return verifiedCases;
@@ -509,11 +552,11 @@ async function main(): Promise<void> {
     loadFixtures(PB7_REFERENCES),
     loadFixtures(TIMER_REFERENCES),
   ]);
-  const pb7Cases = verifyFixtures(pb7Fixtures, buildPb7ReplayProgram);
-  const timerCases = verifyFixtures(timerFixtures, buildTimerReplayProgram);
+  const pb7Cases = await verifyFixtures(pb7Fixtures, buildPb7ReplayProgram);
+  const timerCases = await verifyFixtures(timerFixtures, buildTimerReplayProgram);
 
   console.log(
-    `PASS MOS 6522 reference: ${pb7Cases} PB7 pages and ${timerCases} timer/IFR pages from real 1541 hardware at VICE revision ${VICE_TEST_REVISION}.`,
+    `PASS TypeScript/Rust MOS 6522 reference: ${pb7Cases} PB7 pages and ${timerCases} timer/IFR pages from real 1541 hardware at VICE revision ${VICE_TEST_REVISION}.`,
   );
 }
 

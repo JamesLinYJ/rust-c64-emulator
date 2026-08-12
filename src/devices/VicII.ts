@@ -315,8 +315,8 @@ export class VicII extends IoDevice implements VicCycleSignals {
     this.spriteSpriteCollision |= normalizedMask;
     // 碰撞 IRQ 检测的是寄存器 0→非 0 的边沿；新增位不会在未读清寄存器时再次触发。
     if (registerWasEmpty) this.interruptLatches |= VIC_INTERRUPT_BIT.spriteSpriteCollision;
-    this.forEachSpriteBit(normalizedMask, (sprite) => {
-      sprite.collisionWithSprite = true;
+    this.forEachSpriteBit(normalizedMask, (sprite, set) => {
+      if (set) sprite.collisionWithSprite = true;
     });
   }
 
@@ -326,8 +326,8 @@ export class VicII extends IoDevice implements VicCycleSignals {
     const registerWasEmpty = this.spriteForegroundCollision === 0;
     this.spriteForegroundCollision |= normalizedMask;
     if (registerWasEmpty) this.interruptLatches |= VIC_INTERRUPT_BIT.spriteForegroundCollision;
-    this.forEachSpriteBit(normalizedMask, (sprite) => {
-      sprite.collisionWithForeground = true;
+    this.forEachSpriteBit(normalizedMask, (sprite, set) => {
+      if (set) sprite.collisionWithForeground = true;
     });
   }
 

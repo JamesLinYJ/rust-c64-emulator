@@ -49,6 +49,7 @@ import { WebAudioOutput, type WebAudioOutputStatus } from '../platform/WebAudioO
 import { BrowserC64Input } from '../platform/BrowserC64Input';
 import { RealtimeEmulationLoop, type EmulationLoopState } from '../platform/RealtimeEmulationLoop';
 import { hasBasicReadyPrompt } from './basicStartup';
+import type { C64VideoStandard } from '../video/C64VideoStandard';
 
 export interface C64EmulatorOptions {
   readonly cartridge?: C64CartridgePort;
@@ -65,6 +66,7 @@ export interface C64EmulatorOptions {
   readonly keyboardTarget?: EventTarget;
   readonly audioTarget?: EventTarget;
   readonly signal?: AbortSignal;
+  readonly videoStandard?: C64VideoStandard;
 }
 
 export interface C64ProgramLoadOptions extends InstallPrgOptions {

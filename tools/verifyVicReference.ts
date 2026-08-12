@@ -8,9 +8,8 @@
 //   作者:       OpenAI Codex
 // --------------------------------------------------------------------------
 
-import { createHash } from 'node:crypto';
-import { mkdir, readFile, writeFile } from 'node:fs/promises';
-import { dirname, resolve } from 'node:path';
+import { readFile } from 'node:fs/promises';
+import { resolve } from 'node:path';
 
 import { PNG } from 'pngjs';
 
@@ -21,6 +20,7 @@ import { C64_PALETTE } from '../src/devices/VicII';
 import { installPrg, parsePrg, PRG_START_MODE } from '../src/media/PrgLoader';
 import { PalFrameScheduler } from '../src/video/PalFrameScheduler';
 import { PAL_VIDEO_STANDARD } from '../src/video/palVideoStandard';
+import { loadPinnedReferenceAsset } from './reference/loadPinnedReferenceAsset';
 
 interface ReferenceAsset {
   readonly cacheFileName?: string;
@@ -190,10 +190,6 @@ const VICE_COLODORE_RGB_PALETTE = [
   0x433900, 0x9a6759, 0x444444, 0x6c6c6c, 0x9ad284, 0x6c5eb5, 0x959595,
 ] as const;
 
-function sha256(bytes: Uint8Array): string {
-  return createHash('sha256').update(bytes).digest('hex');
-}
-
 async function readBinary(path: string): Promise<Uint8Array> {
   return new Uint8Array(await readFile(resolve(path)));
 }
@@ -208,38 +204,12 @@ async function loadFirmware(): Promise<C64Firmware> {
 }
 
 async function loadReferenceAsset(asset: ReferenceAsset): Promise<Uint8Array> {
-  const cachePath = resolve(`output/reference/${asset.cacheFileName ?? asset.fileName}`);
-  try {
-    const cached = new Uint8Array(await readFile(cachePath));
-    const actualHash = sha256(cached);
-    if (actualHash !== asset.sha256) {
-      throw new Error(
-        `Cached VICE asset ${asset.fileName} SHA-256 mismatch: received ${actualHash}.`,
-      );
-    }
-    return cached;
-  } catch (error: unknown) {
-    if (!isMissingFileError(error)) throw error;
-  }
-
-  const response = await fetch(asset.url);
-  if (!response.ok) {
-    throw new Error(`Unable to download VICE asset ${asset.fileName}: HTTP ${response.status}.`);
-  }
-  const downloaded = new Uint8Array(await response.arrayBuffer());
-  const actualHash = sha256(downloaded);
-  if (actualHash !== asset.sha256) {
-    throw new Error(
-      `Downloaded VICE asset ${asset.fileName} SHA-256 mismatch: received ${actualHash}.`,
-    );
-  }
-  await mkdir(dirname(cachePath), { recursive: true });
-  await writeFile(cachePath, downloaded);
-  return downloaded;
-}
-
-function isMissingFileError(error: unknown): error is NodeJS.ErrnoException {
-  return error instanceof Error && 'code' in error && error.code === 'ENOENT';
+  return loadPinnedReferenceAsset({
+    cachePath: resolve(`output/reference/${asset.cacheFileName ?? asset.fileName}`),
+    name: `VICE ${asset.fileName}`,
+    sha256: asset.sha256,
+    url: asset.url,
+  });
 }
 
 function runReferenceProgram(
@@ -404,18 +374,18 @@ function createPalFrameCapture(): PalFrameCapture {
 }
 
 async function main(): Promise<void> {
-  const [firmware, rasterIrqProgram, lightPenTimingProgram, pixelReferences] = await Promise.all([
-    loadFirmware(),
-    loadReferenceAsset(RASTER_IRQ_PROGRAM),
-    loadReferenceAsset(LIGHT_PEN_TIMING_PROGRAM),
-    Promise.all(
-      PIXEL_REFERENCE_DEFINITIONS.map(async (definition) => ({
-        definition,
-        program: await loadReferenceAsset(definition.program),
-        referenceImage: await loadReferenceAsset(definition.referenceImage),
-      })),
-    ),
-  ]);
+  const firmware = await loadFirmware();
+  // SourceForge 会间歇性重置并发 TLS 连接；参考资产只下载一次，因此顺序获取更可复现。
+  const rasterIrqProgram = await loadReferenceAsset(RASTER_IRQ_PROGRAM);
+  const lightPenTimingProgram = await loadReferenceAsset(LIGHT_PEN_TIMING_PROGRAM);
+  const pixelReferences = [];
+  for (const definition of PIXEL_REFERENCE_DEFINITIONS) {
+    pixelReferences.push({
+      definition,
+      program: await loadReferenceAsset(definition.program),
+      referenceImage: await loadReferenceAsset(definition.referenceImage),
+    });
+  }
 
   const rasterIrq = runReferenceProgram(firmware, rasterIrqProgram, {
     entryPoint: RASTER_IRQ_ENTRY_POINT,

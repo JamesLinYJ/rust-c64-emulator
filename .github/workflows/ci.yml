@@ -49,11 +49,80 @@ jobs:
       - name: Check formatting
         run: npm run format:check
 
-      - name: Run quality gate
-        run: npm run check
+      - name: Run TypeScript quality gate
+        run: npm run check:ts
+
+  rust:
+    name: Rust and WebAssembly
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v7
+
+      - name: Set up Rust
+        uses: actions-rust-lang/setup-rust-toolchain@v1
+        with:
+          toolchain: 1.97.0
+          target: wasm32-unknown-unknown
+          components: rustfmt, clippy
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v7
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Install Node dependencies
+        run: npm ci
+
+      - name: Check generated Rust CPU metadata
+        run: npm run verify:rust-cpu-metadata
+
+      - name: Check generated Rust SID waveform tables
+        run: npm run verify:rust-sid-waveforms
+
+      - name: Check Rust formatting
+        run: cargo fmt --all -- --check
+
+      - name: Run Clippy
+        run: cargo clippy --workspace --all-targets --all-features -- -D warnings
+
+      - name: Run Rust tests
+        run: cargo test --workspace --all-features
+
+      - name: Run Rust Datasette VICE reference gate
+        run: npm run verify:tape:rust
+
+      - name: Run Rust cartridge VICE reference gate
+        run: npm run verify:cartridge:rust
+
+      - name: Run Rust EasyFlash official reference gate
+        run: npm run verify:easyflash:rust
+
+      - name: Run Rust REU VICE reference gate
+        run: npm run verify:reu:rust
+
+      - name: Install pinned wasm-pack
+        run: cargo install wasm-pack --version 0.15.0 --locked
+
+      - name: Build and verify browser and Node WebAssembly packages
+        run: npm run verify:wasm
+
+      - name: Build and verify Sites production package
+        run: npm run build && npm run package:site
+
+      - name: Upload production browser package
+        uses: actions/upload-artifact@v7
+        with:
+          name: c64-production-site
+          path: dist/client
+          retention-days: 1
 
   browser:
     name: Chromium production smoke test
+    needs: rust
     runs-on: ubuntu-latest
     timeout-minutes: 15
 
@@ -73,8 +142,42 @@ jobs:
       - name: Install Chromium
         run: npx playwright install --with-deps chromium
 
-      - name: Build production bundle
-        run: npm run build
+      - name: Download production browser package
+        uses: actions/download-artifact@v7
+        with:
+          name: c64-production-site
+          path: dist/client
 
       - name: Run browser regression gate
         run: npm run verify:browser
+
+  browser-compatibility:
+    name: Cross-browser production Worker/Wasm
+    needs: rust
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v7
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v7
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Install Chrome, Edge, Firefox and WebKit
+        run: npx playwright install --with-deps chrome msedge firefox webkit
+
+      - name: Download production browser package
+        uses: actions/download-artifact@v7
+        with:
+          name: c64-production-site
+          path: dist/client
+
+      - name: Run cross-browser Worker/Wasm gate
+        run: npm run verify:browser:compatibility

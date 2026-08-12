@@ -5,8 +5,9 @@ export default defineConfig({
   base: './',
   plugins: [react()],
   build: {
+    outDir: 'dist/client',
     target: 'es2022',
-    sourcemap: true,
+    sourcemap: false,
   },
   test: {
     environment: 'node',

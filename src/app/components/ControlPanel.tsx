@@ -4,6 +4,7 @@ import { useRef, useState, type ChangeEvent, type DragEvent } from 'react';
 import { BUNDLED_PROGRAMS, type BundledProgramDescriptor } from '../../media/BundledProgramCatalog';
 import type { DisplayScale } from './EmulatorWorkspace';
 import type { EmulatorPhase } from '../useC64Emulator';
+import type { C64VideoStandard } from '../../video/C64VideoStandard';
 
 interface ControlPanelProps {
   readonly displayScale: DisplayScale;
@@ -15,7 +16,9 @@ interface ControlPanelProps {
   readonly onRun: () => void;
   readonly onScaleChange: (scale: DisplayScale) => void;
   readonly onStepFrame: () => void;
+  readonly onVideoStandardChange: (videoStandard: C64VideoStandard) => void;
   readonly phase: EmulatorPhase;
+  readonly videoStandard: C64VideoStandard;
 }
 
 const DISPLAY_SCALE_OPTIONS: readonly {
@@ -37,7 +40,9 @@ export function ControlPanel({
   onRun,
   onScaleChange,
   onStepFrame,
+  onVideoStandardChange,
   phase,
+  videoStandard,
 }: ControlPanelProps) {
   const fileInputRef = useRef<HTMLInputElement>(null);
   const [selectedFile, setSelectedFile] = useState('galaga.prg');
@@ -134,6 +139,23 @@ export function ControlPanel({
 
       <section id="runtime-panel" className="panel-card">
         <h2>运行控制</h2>
+        <div className="scale-control">
+          <span>视频制式</span>
+          <div className="scale-options" role="group" aria-label="视频制式">
+            {(['pal', 'ntsc'] as const).map((standard) => (
+              <button
+                key={standard}
+                className="scale-option"
+                type="button"
+                aria-pressed={videoStandard === standard}
+                disabled={phase === 'loading'}
+                onClick={() => onVideoStandardChange(standard)}
+              >
+                {standard.toUpperCase()}
+              </button>
+            ))}
+          </div>
+        </div>
         <div className="transport" role="group" aria-label="运行控制">
           <button
             className={`button button--transport button--run${running ? ' is-active' : ''}`}

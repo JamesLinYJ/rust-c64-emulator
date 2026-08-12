@@ -10,18 +10,60 @@
 
 import { useCallback, useEffect, useRef, useState, type RefObject } from 'react';
 
-import type { C64Emulator, C64EmulatorOptions } from '../core/C64Emulator';
+import type {
+  C64EmulatorOptions,
+  C64ProgramLoadOptions,
+  C64RemoteProgramLoadOptions,
+} from '../core/C64Emulator';
 import type { BundledProgramDescriptor } from '../media/BundledProgramCatalog';
-import { PRG_START_MODE } from '../media/PrgLoader';
+import { PRG_START_MODE, type LoadedProgram } from '../media/PrgLoader';
+import type { BrowserC64Input } from '../platform/BrowserC64Input';
 import type { WebAudioOutputStatus } from '../platform/WebAudioOutput';
+import type { PcmAudioStreamMetrics } from '../platform/PcmAudioWorkletProtocol';
 import { hex } from '../shared/numbers';
-import { PAL_VIDEO_STANDARD } from '../video/palVideoStandard';
+import { C64_VIDEO_STANDARDS, type C64VideoStandard } from '../video/C64VideoStandard';
 
 export type EmulatorPhase = 'error' | 'loading' | 'paused' | 'running';
 export type MessageTone = 'error' | 'normal';
-export type C64EmulatorFactory = (options: C64EmulatorOptions) => Promise<C64Emulator>;
+
+interface C64EmulatorBackendEvents {
+  readonly audioState: WebAudioOutputStatus;
+  readonly error: Error;
+  readonly frame: { readonly frameNumber: number; readonly renderTime: number };
+  readonly programLoaded: LoadedProgram;
+  readonly state: 'paused' | 'running';
+}
+
+export interface C64EmulatorBackend {
+  readonly audioStatus: WebAudioOutputStatus;
+  readonly audioStreamMetrics: PcmAudioStreamMetrics;
+  readonly basicReady: boolean;
+  readonly input: Pick<BrowserC64Input, 'releaseJoystickSource' | 'setJoystickSourceLines'>;
+  readonly registers: { readonly programCounter: number };
+  readonly state: 'paused' | 'running';
+  dispose(): void;
+  enableAudio(): Promise<WebAudioOutputStatus>;
+  loadProgram(url: string, options?: C64RemoteProgramLoadOptions): Promise<LoadedProgram>;
+  loadProgramBytesAsync(
+    input: ArrayBuffer | Uint8Array,
+    options?: C64ProgramLoadOptions,
+    signal?: AbortSignal,
+  ): Promise<LoadedProgram>;
+  on<EventName extends keyof C64EmulatorBackendEvents>(
+    eventName: EventName,
+    listener: (payload: C64EmulatorBackendEvents[EventName]) => void,
+  ): () => void;
+  reset(): void;
+  start(): void;
+  stepFrame(): void;
+  toggle(): void;
+}
+
+export type C64EmulatorFactory = (options: C64EmulatorOptions) => Promise<C64EmulatorBackend>;
 
 interface EmulatorViewState {
+  readonly audioOverrunSamples: number;
+  readonly audioUnderrunSamples: number;
   readonly bootComplete: boolean;
   readonly framesPerSecond: number | undefined;
   readonly message: string;
@@ -51,7 +93,6 @@ const INITIAL_MESSAGE = '模拟器初始化中。屏幕就绪后可选择内置�
 const RETRY_MESSAGE = '正在重新载入固件并初始化模拟器…';
 const READY_MESSAGE = 'BASIC 已就绪。选择程序后点击“载入”，或直接拖入 PRG 文件。';
 const FRAME_SAMPLE_LIMIT = 120;
-const PAL_FRAME_BUDGET_MS = 1000 / PAL_VIDEO_STANDARD.timing.refreshRateHz;
 const HTTP_STATUS_PATTERN = /\bHTTP\s+(\d{3})\b/iu;
 const NETWORK_FAILURE_PATTERN = /failed to fetch|fetch failed|networkerror|load failed/iu;
 
@@ -76,17 +117,18 @@ export function describeInitializationFailure(error: unknown): string {
 }
 
 const createBrowserC64Emulator: C64EmulatorFactory = async (options) => {
-  const { C64Emulator } = await import('../core/C64Emulator');
-  return C64Emulator.create(options);
+  const { C64WorkerEmulator } = await import('../platform/C64WorkerEmulator');
+  return C64WorkerEmulator.create(options);
 };
 
 export function useC64Emulator(
   canvasRef: RefObject<HTMLCanvasElement | null>,
   keyboardTargetRef: RefObject<HTMLElement | null>,
   createEmulator: C64EmulatorFactory = createBrowserC64Emulator,
+  videoStandard: C64VideoStandard = 'pal',
 ): C64EmulatorController {
   const createEmulatorRef = useRef(createEmulator);
-  const emulatorRef = useRef<C64Emulator | null>(null);
+  const emulatorRef = useRef<C64EmulatorBackend | null>(null);
   const bootCompleteRef = useRef(false);
   const programRequestRef = useRef<AbortController | null>(null);
   const operationIdRef = useRef(0);
@@ -101,6 +143,9 @@ export function useC64Emulator(
   const [overBudgetFrames, setOverBudgetFrames] = useState(0);
   const [sampledFrames, setSampledFrames] = useState(0);
   const [audioStatus, setAudioStatus] = useState<WebAudioOutputStatus>({ state: 'inactive' });
+  const [audioOverrunSamples, setAudioOverrunSamples] = useState(0);
+  const [audioUnderrunSamples, setAudioUnderrunSamples] = useState(0);
+  const frameBudgetMs = 1000 / C64_VIDEO_STANDARDS[videoStandard].refreshRateHz;
 
   const showMessage = useCallback((nextMessage: string): void => {
     setMessage(nextMessage);
@@ -128,7 +173,7 @@ export function useC64Emulator(
 
     const initialization = new AbortController();
     let disposed = false;
-    let emulator: C64Emulator | null = null;
+    let emulator: C64EmulatorBackend | null = null;
     let framesSinceUpdate = 0;
     let lastFrameUpdate = performance.now();
     const renderTimes: number[] = [];
@@ -143,6 +188,8 @@ export function useC64Emulator(
     setRenderP95Ms(undefined);
     setSampledFrames(0);
     setAudioStatus({ state: 'inactive' });
+    setAudioOverrunSamples(0);
+    setAudioUnderrunSamples(0);
 
     const initialize = async (): Promise<void> => {
       try {
@@ -156,6 +203,7 @@ export function useC64Emulator(
           },
           keyboardTarget,
           signal: initialization.signal,
+          videoStandard,
         });
 
         if (disposed) {
@@ -188,10 +236,12 @@ export function useC64Emulator(
               setFramesPerSecond(Math.round((framesSinceUpdate * 1000) / elapsed));
               setRenderP95Ms(sortedRenderTimes[p95Index]);
               setOverBudgetFrames(
-                renderTimes.filter((renderTimeMs) => renderTimeMs > PAL_FRAME_BUDGET_MS).length,
+                renderTimes.filter((renderTimeMs) => renderTimeMs > frameBudgetMs).length,
               );
               setSampledFrames(renderTimes.length);
               setProgramCounter(hex(emulator.registers.programCounter, 4));
+              setAudioOverrunSamples(emulator.audioStreamMetrics.overrunSamples);
+              setAudioUnderrunSamples(emulator.audioStreamMetrics.underrunSamples);
               framesSinceUpdate = 0;
               lastFrameUpdate = now;
             }
@@ -231,7 +281,15 @@ export function useC64Emulator(
       if (emulatorRef.current === emulator) emulatorRef.current = null;
       emulator?.dispose();
     };
-  }, [canvasRef, initializationAttempt, keyboardTargetRef, showFatalError, showMessage]);
+  }, [
+    canvasRef,
+    frameBudgetMs,
+    initializationAttempt,
+    keyboardTargetRef,
+    showFatalError,
+    showMessage,
+    videoStandard,
+  ]);
 
   const loadBuiltInProgram = useCallback(
     async (program: BundledProgramDescriptor): Promise<boolean> => {
@@ -367,7 +425,9 @@ export function useC64Emulator(
   const isReady = bootComplete && (phase === 'paused' || phase === 'running');
 
   return {
+    audioOverrunSamples,
     audioStatus,
+    audioUnderrunSamples,
     bootComplete,
     enableAudio,
     framesPerSecond,

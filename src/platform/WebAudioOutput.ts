@@ -12,6 +12,7 @@ import c64PcmAudioWorkletUrl from './C64PcmAudioWorklet.ts?worker&url';
 import {
   C64_PCM_AUDIO_PROCESSOR_NAME,
   type PcmAudioStreamMetrics,
+  type PcmAudioBufferRecycle,
   type PcmAudioWorkletCommand,
 } from './PcmAudioWorkletProtocol';
 
@@ -136,6 +137,16 @@ function isPcmAudioStreamMetrics(value: unknown): value is PcmAudioStreamMetrics
   );
 }
 
+function isPcmAudioBufferRecycle(value: unknown): value is PcmAudioBufferRecycle {
+  if (typeof value !== 'object' || value === null) return false;
+  const candidate = value as Partial<PcmAudioBufferRecycle>;
+  return (
+    candidate.type === 'recycle' &&
+    candidate.buffer instanceof ArrayBuffer &&
+    typeof candidate.recycleToken === 'number'
+  );
+}
+
 export class WebAudioOutput {
   private activationPromise: Promise<WebAudioOutputStatus> | undefined;
   private context: WebAudioContext | undefined;
@@ -143,6 +154,8 @@ export class WebAudioOutput {
   private disposed = false;
   private metricsValue = emptyMetrics();
   private node: PcmAudioNode | undefined;
+  private nextRecycleToken = 1;
+  private readonly recycleCallbacks = new Map<number, (buffer: ArrayBuffer) => void>();
   private readonly sampleRateHz: number;
   private readonly statusObservers = new Set<WebAudioOutputStatusObserver>();
   private statusValue: WebAudioOutputStatus = { state: 'inactive' };
@@ -159,9 +172,16 @@ export class WebAudioOutput {
   };
 
   private readonly handleWorkletMessage = (event: Event): void => {
-    if (event instanceof MessageEvent && isPcmAudioStreamMetrics(event.data)) {
+    if (!(event instanceof MessageEvent)) return;
+    if (isPcmAudioStreamMetrics(event.data)) {
       this.metricsValue = event.data;
+      return;
     }
+    if (!isPcmAudioBufferRecycle(event.data)) return;
+    const recycle = this.recycleCallbacks.get(event.data.recycleToken);
+    if (!recycle) return;
+    this.recycleCallbacks.delete(event.data.recycleToken);
+    recycle(event.data.buffer);
   };
 
   constructor(
@@ -206,23 +226,58 @@ export class WebAudioOutput {
   }
 
   enqueue(samples: Float32Array, sampleRate: number): void {
-    const context = this.context;
-    const node = this.node;
-    if (context?.state !== 'running' || !node || samples.length === 0) return;
+    const transferableBuffer =
+      samples.buffer instanceof ArrayBuffer &&
+      samples.byteOffset === 0 &&
+      samples.byteLength === samples.buffer.byteLength
+        ? samples.buffer
+        : Float32Array.from(samples).buffer;
+    this.enqueueTransfer(transferableBuffer, samples.length, sampleRate, () => undefined);
+  }
+
+  enqueueTransfer(
+    buffer: ArrayBuffer,
+    sampleCount: number,
+    sampleRate: number,
+    recycle: (buffer: ArrayBuffer) => void,
+  ): boolean {
+    if (
+      !Number.isSafeInteger(sampleCount) ||
+      sampleCount < 0 ||
+      sampleCount * Float32Array.BYTES_PER_ELEMENT > buffer.byteLength
+    ) {
+      throw new RangeError(`PCM sample count ${sampleCount} exceeds its transferred buffer.`);
+    }
     if (sampleRate !== this.sampleRateHz) {
       throw new Error(
         `PCM sample rate ${sampleRate} Hz does not match AudioWorklet rate ${this.sampleRateHz} Hz.`,
       );
     }
+    const context = this.context;
+    const node = this.node;
+    if (context?.state !== 'running' || !node || sampleCount === 0) {
+      recycle(buffer);
+      return false;
+    }
 
-    const transferableSamples =
-      samples.buffer instanceof ArrayBuffer &&
-      samples.byteOffset === 0 &&
-      samples.byteLength === samples.buffer.byteLength
-        ? samples
-        : Float32Array.from(samples);
-    const command: PcmAudioWorkletCommand = { samples: transferableSamples, type: 'samples' };
-    node.port.postMessage(command, [transferableSamples.buffer]);
+    const recycleToken = this.nextRecycleToken;
+    this.nextRecycleToken =
+      this.nextRecycleToken === Number.MAX_SAFE_INTEGER ? 1 : recycleToken + 1;
+    this.recycleCallbacks.set(recycleToken, recycle);
+    const command: PcmAudioWorkletCommand = {
+      buffer,
+      recycleToken,
+      sampleCount,
+      type: 'samples',
+    };
+    try {
+      node.port.postMessage(command, [buffer]);
+    } catch (error: unknown) {
+      this.recycleCallbacks.delete(recycleToken);
+      recycle(buffer);
+      throw error;
+    }
+    return true;
   }
 
   clear(): void {

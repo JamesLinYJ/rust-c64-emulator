@@ -14,19 +14,23 @@ import { AppHeader } from './components/AppHeader';
 import { ControlPanel } from './components/ControlPanel';
 import { EmulatorWorkspace, type DisplayScale } from './components/EmulatorWorkspace';
 import type { BundledProgramDescriptor } from '../media/BundledProgramCatalog';
+import { C64_VIDEO_STANDARDS, type C64VideoStandard } from '../video/C64VideoStandard';
 import { useC64Emulator } from './useC64Emulator';
 
 export function App() {
   const canvasRef = useRef<HTMLCanvasElement>(null);
+  const keyboardInputRef = useRef<HTMLTextAreaElement>(null);
   const screenFrameRef = useRef<HTMLDivElement>(null);
   const [displayScale, setDisplayScale] = useState<DisplayScale>('fit');
   const [darkTheme, setDarkTheme] = useState(false);
   const [isFullscreen, setIsFullscreen] = useState(false);
-  const emulator = useC64Emulator(canvasRef, screenFrameRef);
+  const [videoStandard, setVideoStandard] = useState<C64VideoStandard>('pal');
+  const video = C64_VIDEO_STANDARDS[videoStandard];
+  const emulator = useC64Emulator(canvasRef, keyboardInputRef, undefined, videoStandard);
   const { loadBuiltInProgram, loadLocalProgram, reset, toggle } = emulator;
 
   const focusScreen = useCallback((): void => {
-    screenFrameRef.current?.focus();
+    keyboardInputRef.current?.focus({ preventScroll: true });
   }, []);
 
   const handleLoadProgram = useCallback(
@@ -80,15 +84,19 @@ export function App() {
         onToggleFullscreen={toggleFullscreen}
         onToggleTheme={toggleTheme}
         phase={emulator.phase}
+        videoStandard={videoStandard}
       />
 
-      <main className="dashboard" aria-label="TypeScript Commodore 64 Emulator 运行控制台">
+      <main className="dashboard" aria-label="Rust WebAssembly Commodore 64 Emulator 运行控制台">
         <section id="console" className="console-card" aria-label="Commodore 64 主机">
           <EmulatorWorkspace
             audioStatus={emulator.audioStatus}
+            audioOverrunSamples={emulator.audioOverrunSamples}
+            audioUnderrunSamples={emulator.audioUnderrunSamples}
             bootComplete={emulator.bootComplete}
             canvasRef={canvasRef}
             framesPerSecond={emulator.framesPerSecond}
+            keyboardInputRef={keyboardInputRef}
             message={emulator.message}
             messageTone={emulator.messageTone}
             overBudgetFrames={emulator.overBudgetFrames}
@@ -102,6 +110,7 @@ export function App() {
             sampledFrames={emulator.sampledFrames}
             screenFrameRef={screenFrameRef}
             displayScale={displayScale}
+            videoStandard={videoStandard}
           />
         </section>
 
@@ -115,18 +124,16 @@ export function App() {
           onRun={handleRun}
           onScaleChange={setDisplayScale}
           onStepFrame={emulator.stepFrame}
+          onVideoStandardChange={setVideoStandard}
           phase={emulator.phase}
+          videoStandard={videoStandard}
         />
       </main>
 
       <footer className="app-footer">
-        <span>PAL 硬件模型 · MIT License</span>
-        <a
-          href="https://github.com/JamesLinYJ/typescript-commodore-64-emulator"
-          target="_blank"
-          rel="noreferrer"
-        >
-          JamesLinYJ 原始项目
+        <span>{video.label} 硬件模型 · MIT License</span>
+        <a href="https://github.com/JamesLinYJ/rust-c64-emulator" target="_blank" rel="noreferrer">
+          JamesLinYJ Rust 项目
         </a>
       </footer>
     </div>

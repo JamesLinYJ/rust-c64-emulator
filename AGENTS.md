@@ -1,11 +1,12 @@
-# TypeScript Commodore 64 Emulator 工程规范
+# Rust C64 Emulator 工程规范
 
 本文件适用于仓库根目录及其全部子目录。子目录如需更严格的局部约束，可以增加自己的 `AGENTS.md`，但不得削弱本文件中的类型安全、硬件行为、测试和代码质量要求。
 
 ## 1. 项目定位
 
-- 项目全名为 **TypeScript Commodore 64 Emulator**，npm 包名为 `typescript-commodore-64-emulator`。
-- 项目使用严格 TypeScript 现代化复刻 Commodore 64。硬件外部可观察行为必须与目标机型一致，内部实现可以使用现代算法、数据结构和工程方法。
+- 项目全名为 **Rust C64 Emulator**，GitHub 仓库与 npm 应用名为 `rust-c64-emulator`。
+- 生产时序核心使用 Rust，并同时构建 native 测试目标与 WebAssembly 运行目标；严格 TypeScript/React 负责浏览器平台、公共 facade、Worker、UI，以及迁移期间的独立差分 oracle。
+- 项目以公开、统一的体系结构规则现代化复刻 Commodore 64。硬件外部可观察行为必须与目标机型一致，内部实现可以使用现代算法、数据结构和工程方法。
 - CPU 运算结果与总线访问顺序、VIC-II/CIA/SID 时序、PLA 映射、IRQ/NMI、IEC、磁带和磁盘设备交互属于必须复刻的行为边界。
 - React、Canvas、Web Audio、事件分发、缓冲区、重采样、序列化、测试工具和 UI 状态管理不要求复刻旧计算机内部实现，但不得改变硬件层可观察行为。
 - 第三方模拟器和测试程序只能作为独立行为参考或测试预言机，不能替代项目自己的硬件实现。
@@ -14,7 +15,7 @@
 
 文件头说明模块身份和维护归属。所有新建的 TypeScript、TSX、JavaScript、Python 以及其它支持注释的源码和测试文件必须使用统一文件头。JSON、二进制参考程序、外部工具生成物以及不支持同类注释的格式遵从其原生格式。
 
-TypeScript、TSX 和 JavaScript 使用以下格式：
+Rust、TypeScript、TSX 和 JavaScript 使用以下格式：
 
 ```text
 // +-------------------------------------------------------------------------
@@ -32,7 +33,8 @@ Python 等使用 `#` 注释前缀的文件采用相同内容和布局，仅替�
 
 - “模块中文名称”必须描述文件的单一主要职责，例如“VIC-II 周期时序器”“CPU 中断采样时序”或“运行控制面板”，不得使用“工具”“公共模块”等空泛名称。
 - “文件”必须与当前文件的实际 basename 完全一致，并采用本项目规定的现代 PascalCase 或既定配置文件命名。
-- “日期”记录文件创建、重命名或实质重构日期，不得省略。格式固定为 `YYYY年MM月DD日`。
+- Rust 源码使用相同的 `//` 文件头。模块名、文件 basename、日期和作者规则与 TypeScript 完全一致。
+- “日期”记录文件创建、重命名或实质重构日期，不得省略。格式固定为 `YYYY年MM月DD日`；普通修改不得刷新历史日期。
 - “作者”填写实际创建或执行本次实质重构的主体。由 Codex 创建或实质重构时填写 `OpenAI Codex`，不得借用用户或历史作者姓名。
 - 文件重命名或实质重构时，必须同步更新文件名、日期和作者。普通小修不改日期和作者。
 - 不得为了给无关旧文件补头制造大面积 diff；只处理本次新建、重命名或实质重构的文件。
@@ -49,6 +51,16 @@ Python 等使用 `#` 注释前缀的文件采用相同内容和布局，仅替�
 - React 组件只负责界面组合和用户交互。CPU、内存、芯片、媒体解析和机器调度不得依赖 React。
 - 公共接口优先使用明确的只读类型、判别联合和依赖接口。类型名称、单位和生命周期必须能从声明中读懂。
 
+## 3.1 Rust 与 WebAssembly
+
+- `crates/c64-core` 拥有 CPU、内存、总线、时钟和设备的确定性真值，不得依赖 DOM、Node、React、JavaScript 时钟或宿主随机数。
+- `crates/c64-wasm` 只提供粗粒度 ABI。不得让 CPU 周期、VIC 周期或 SID sample 逐次跨越 JS/Wasm 边界。
+- `c64-core` 使用 `#![forbid(unsafe_code)]`。如果性能证据表明 facade 必须使用 unsafe，只能放在 `c64-wasm` 的最小模块内，并为长度、所有权、内存增长和生命周期增加边界测试。
+- 客机算术使用明确的 wrapping/checked 语义；虚拟时间、总线槽位、DMA 和芯片状态不得依赖宿主浮点时间累计。
+- Rust 公共类型使用枚举、新类型和 `Result` 表达模式、单位与失败。不得用裸 `u8` 在核心内部隐式代表 profile、时钟域或总线目标。
+- Web 与 Node 必须从同一 Rust 源码生成；SIMD、SharedArrayBuffer 和宿主线程只能作为可选、bit-identical 的平台优化。
+- 编译缓存、hot trace 和 uop block 是派生状态，不写入 save-state；载入状态后通过页版本和映射 generation 安全重建。
+
 ## 4. 命名与常量
 
 - TypeScript 类、组件和主要模块文件使用现代 PascalCase，例如 `TypedEventEmitter.ts`、`VicCycleSequencer.ts` 和 `ControlPanel.tsx`。
@@ -60,13 +72,14 @@ Python 等使用 `#` 注释前缀的文件采用相同内容和布局，仅替�
 
 ## 5. 架构与解耦
 
-- 依赖方向固定为：`app -> video/platform -> core -> devices/media/shared`。底层硬件模型不得反向依赖 React、DOM、Canvas 或浏览器 API。
+- 依赖方向固定为：`app -> video/platform -> TypeScript facade/Worker -> c64-wasm -> c64-core`。迁移期间的 TypeScript oracle 仍遵循原有 `core -> devices/media/shared` 方向。底层硬件模型不得反向依赖 React、DOM、Canvas 或浏览器 API。
 - CPU、VIC-II、SID、CIA、PLA、IEC 和外设通过窄接口、总线事务或明确事件协作，不得互相读取对方的私有状态。
 - 机器调度器负责时钟推进和总线仲裁；设备负责自身状态机；渲染器只消费已经锁存的视频状态；音频输出只消费 SID 产生的样本。
 - 区分硬件状态、派生展示状态和 UI 状态，禁止用 UI 所需字段反向驱动硬件真值。
 - 优先组合而非继承。事件订阅必须可解除，资源生命周期必须有明确所有者。
 - 不加入只为某个程序、ROM、测试或演示通过的地址特判、时序补丁或静默兼容分支。
 - 不使用掩盖错误的 fallback。外部资源缺失、哈希不符、非法媒体、总线周期不变量破坏和不支持的硬件模式必须产生明确错误。
+- Strict、Turbo、SuperCPU 与 VM Enhanced 是正交、显式、版本化的 profile/execution 组合。Reset、模式切换、BusBridge 和能力发现必须有公开规范，禁止通过软件身份选择语义。
 
 ## 6. 硬件复刻与现代算法
 
@@ -89,13 +102,17 @@ Python 等使用 `#` 注释前缀的文件采用相同内容和布局，仅替�
 - 完成相关修改前至少运行：
 
 ```text
+npm run check:rust
 npm run typecheck
 npm run lint
 npm run test
 npm run build
 ```
 
-- 涉及硬件时再运行 `npm run verify:reference`；涉及前端时再运行 `npm run verify:browser`。
+- 涉及 Wasm ABI 时运行 `npm run wasm:build`；涉及硬件时再运行 `npm run verify:reference`；涉及前端时再运行 `npm run verify:browser`。
+- Rust 门禁固定包含 `cargo fmt --all -- --check`、Clippy `-D warnings` 和 `cargo test --workspace --all-features`。
+- Rust、rustc、Clippy、TypeScript、ESLint 和 Wasm build 必须零 warning；不得用 workspace/global `allow`、降低 lint 级别或过滤构建输出制造假绿。
+- Rust Strict 切换为生产后端前，必须通过仓库 `verify:reference` 聚合的全部固定 VICE 来源/SHA-256 参考门禁；窄单测或自有 oracle 不能替代该证据。
 - 不得宣称某个芯片或整机“完整复刻”，除非相应官方功能、边界时序、媒体路径和独立行为基准均已覆盖并通过。
 
 ## 8. 修改纪律

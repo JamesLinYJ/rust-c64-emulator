@@ -1,6 +1,8 @@
 dist
 coverage
 node_modules
+target
+generated/wasm
 js
 .playwright-cli/
 tools/reference/SingleStep6502Samples.json

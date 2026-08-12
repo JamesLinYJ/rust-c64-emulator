@@ -48,12 +48,15 @@ const OUTPUT_DIRECTORY = resolve('output/playwright/reference-ui');
 const PROGRAM_START_TIMEOUT_MS = 10_000;
 const PROGRAM_COUNTER_PATTERN = /PC \$([0-9A-F]{4})/u;
 const RENDER_METRICS_PATTERN = /呈现\s+(\d+)\s+FPS.*?p95\s+([\d.]+)\s+ms.*?超预算\s+(\d+)\/(\d+)/u;
+const AUDIO_METRICS_PATTERN = /音频欠载\s+(\d+)\s+·\s+音频溢出\s+(\d+)/u;
 const PNG_DATA_URL_PREFIX = 'data:image/png;base64,';
 const RGBA_BYTE_COUNT = 4;
 const MINIMUM_PROGRAM_CHANGED_PIXELS = 4_000;
 const MINIMUM_PROGRAM_COLOR_COUNT = 2;
 const MINIMUM_TOUCH_TARGET_PX = 44;
 const MINIMUM_MOBILE_CANVAS_WIDTH_PX = 320;
+const MINIMUM_NTSC_FRAMES_PER_SECOND = 55;
+const MAXIMUM_NTSC_FRAMES_PER_SECOND = 65;
 const BASIC_FIRMWARE_PATH = '/firmware/basic.901226-01.bin';
 const GALAGA_PROGRAM_PATH = '/programs/galaga.prg';
 const INITIALIZATION_HTTP_ERROR = '模拟器固件下载失败（HTTP 503）。请稍后重试。';
@@ -132,6 +135,20 @@ async function readBrowserRenderMetrics(page: Page): Promise<BrowserRenderMetric
     throw new Error(`Runtime telemetry contained invalid render metrics: "${text.trim()}".`);
   }
   return { framesPerSecond, overBudgetFrames, p95Ms, sampledFrames };
+}
+
+async function verifyZeroAudioStreamErrors(page: Page, videoStandard: string): Promise<void> {
+  const text = (await page.locator('[aria-label="实时执行数据"]').textContent()) ?? '';
+  const match = AUDIO_METRICS_PATTERN.exec(text);
+  if (!match) throw new Error(`${videoStandard} telemetry did not publish audio stream metrics.`);
+  const underrunSamples = Number.parseInt(match[1] ?? '', 10);
+  const overrunSamples = Number.parseInt(match[2] ?? '', 10);
+  if (underrunSamples !== 0 || overrunSamples !== 0) {
+    throw new Error(
+      `${videoStandard} audio reported ${underrunSamples} underrun and ` +
+        `${overrunSamples} overrun samples.`,
+    );
+  }
 }
 
 async function waitForProgramExecution(page: Page): Promise<number> {
@@ -440,6 +457,7 @@ async function verifyDesktop(page: Page): Promise<BrowserRenderMetrics> {
   await waitForProgramExecution(page);
   await page.waitForTimeout(2_000);
   const renderMetrics = await readBrowserRenderMetrics(page);
+  await verifyZeroAudioStreamErrors(page, 'PAL');
   await page.getByRole('button', { name: '暂停' }).click();
   verifyProgramCanvas(basicReadyFrame, await captureCanvasFrame(page));
   await page.getByRole('button', { name: '运行' }).click();
@@ -462,6 +480,47 @@ async function verifyDesktop(page: Page): Promise<BrowserRenderMetrics> {
     beforeResetAudio.sampleBatches,
   );
   return renderMetrics;
+}
+
+async function verifyNtscRuntime(page: Page): Promise<BrowserRenderMetrics> {
+  await page.goto(PREVIEW_URL, { waitUntil: 'networkidle' });
+  await waitForBoot(page);
+  await installAudioLifecycleProbe(page);
+  await page.getByRole('button', { name: 'NTSC', exact: true }).click();
+  await page.waitForFunction(() => {
+    const canvas = document.querySelector('canvas');
+    return canvas instanceof HTMLCanvasElement && canvas.width === 403 && canvas.height === 247;
+  });
+  await waitForBoot(page);
+  await page.getByText('NTSC · Rust/Wasm Worker 模拟器', { exact: true }).waitFor();
+  await page.getByRole('button', { name: '启用声音' }).click();
+  await page.getByText('声音已开启', { exact: true }).waitFor();
+  await page.waitForFunction(
+    () => ((window as AudioProbeWindow).__audioLifecycleProbe?.sampleBatches ?? 0) > 0,
+  );
+  await page.waitForFunction(() => {
+    const telemetry = document.querySelector('[aria-label="实时执行数据"]')?.textContent ?? '';
+    return /NTSC 59\.83 Hz.*呈现\s+\d+\s+FPS.*超预算\s+\d+\/\d+/u.test(telemetry);
+  });
+  await page.waitForTimeout(2_500);
+
+  const metrics = await readBrowserRenderMetrics(page);
+  await verifyZeroAudioStreamErrors(page, 'NTSC');
+  if (
+    metrics.framesPerSecond < MINIMUM_NTSC_FRAMES_PER_SECOND ||
+    metrics.framesPerSecond > MAXIMUM_NTSC_FRAMES_PER_SECOND
+  ) {
+    throw new Error(
+      `NTSC runtime produced ${metrics.framesPerSecond} FPS; expected ` +
+        `${MINIMUM_NTSC_FRAMES_PER_SECOND}-${MAXIMUM_NTSC_FRAMES_PER_SECOND}.`,
+    );
+  }
+  await verifyNoHorizontalOverflow(page, 'NTSC desktop');
+  await page.screenshot({
+    path: resolve(OUTPUT_DIRECTORY, 'current-desktop-ntsc.png'),
+    fullPage: true,
+  });
+  return metrics;
 }
 
 async function verifyBundledProgramIntegrity(page: Page): Promise<void> {
@@ -658,6 +717,11 @@ async function main(): Promise<void> {
     const desktopMetrics = await verifyDesktop(desktop);
     await desktop.close();
 
+    const ntsc = await browser.newPage({ viewport: DESKTOP_VIEWPORT });
+    collectBrowserProblems(ntsc, problems);
+    const ntscMetrics = await verifyNtscRuntime(ntsc);
+    await ntsc.close();
+
     const integrity = await browser.newPage({ viewport: DESKTOP_VIEWPORT });
     collectBrowserProblems(integrity, problems);
     await verifyBundledProgramIntegrity(integrity);
@@ -745,7 +809,9 @@ async function main(): Promise<void> {
     console.log(
       `Browser render metrics: ${desktopMetrics.framesPerSecond} FPS, ` +
         `p95 ${desktopMetrics.p95Ms.toFixed(2)} ms, ` +
-        `${desktopMetrics.overBudgetFrames}/${desktopMetrics.sampledFrames} over budget.`,
+        `${desktopMetrics.overBudgetFrames}/${desktopMetrics.sampledFrames} over budget; ` +
+        `NTSC ${ntscMetrics.framesPerSecond} FPS, p95 ${ntscMetrics.p95Ms.toFixed(2)} ms, ` +
+        `${ntscMetrics.overBudgetFrames}/${ntscMetrics.sampledFrames} over budget.`,
     );
   } finally {
     await browser.close();
@@ -756,7 +822,7 @@ async function main(): Promise<void> {
     throw new Error(`Browser verification reported problems:\n${problems.join('\n')}`);
   }
   console.log(
-    'PASS browser UI: 1440 desktop, 390 portrait/recovery, 844 landscape, CDP multi-touch, 44px targets, 0 unexpected overflow/warnings/errors.',
+    'PASS browser UI: PAL/NTSC realtime, 1440 desktop, 390 portrait/recovery, 844 landscape, CDP multi-touch, 44px targets, 0 unexpected overflow/warnings/errors.',
   );
 }
 

@@ -1,0 +1,19 @@
+[package]
+name = "c64-wasm"
+description = "Coarse-grained WebAssembly facade for Rust C64 Emulator"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+license-file.workspace = true
+repository.workspace = true
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+c64-core = { path = "../c64-core" }
+wasm-bindgen = "=0.2.127"
+
+[lints]
+workspace = true

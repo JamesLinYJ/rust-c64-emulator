@@ -54,6 +54,45 @@ const SHIFTED_MATRIX_BINDINGS = new Map<string, readonly string[]>([
   ['F8', ['ShiftLeft', 'F7']],
 ]);
 
+const SOFT_KEYBOARD_DIRECT_BINDINGS = new Map<string, string>([
+  ['\b', 'Backspace'],
+  ['\n', 'Enter'],
+  ['\r', 'Enter'],
+  [' ', 'Space'],
+  ['@', 'Quote'],
+  [':', 'Semicolon'],
+  ['=', 'Equal'],
+  [',', 'Comma'],
+  ['-', 'Minus'],
+  ['.', 'Period'],
+  ['/', 'Slash'],
+  ['+', 'BracketLeft'],
+  ['*', 'BracketRight'],
+]);
+
+const SOFT_KEYBOARD_SHIFTED_BINDINGS = new Map<string, string>([
+  ['!', 'Digit1'],
+  ['"', 'Digit2'],
+  ['#', 'Digit3'],
+  ['$', 'Digit4'],
+  ['%', 'Digit5'],
+  ['&', 'Digit6'],
+  ["'", 'Digit7'],
+  ['‘', 'Digit7'],
+  ['’', 'Digit7'],
+  ['(', 'Digit8'],
+  [')', 'Digit9'],
+  [';', 'Semicolon'],
+  ['<', 'Comma'],
+  ['>', 'Period'],
+  ['?', 'Slash'],
+  ['“', 'Digit2'],
+  ['”', 'Digit2'],
+]);
+
+const SOFT_KEYBOARD_KEY_DOWN_MS = 50;
+const SOFT_KEYBOARD_KEY_UP_MS = 30;
+
 const RELEASED_JOYSTICK_SIGNALS = {
   groundedDigitalLines: 0,
   paddleXResistanceOhms: null,
@@ -73,6 +112,9 @@ export class BrowserC64Input {
   private readonly directJoystickSources = new Map<number, number>();
   private readonly matrixPressCounts = new Map<string, number>();
   private readonly joystickPressCounts = new Map<number, number>();
+  private readonly softKeyboardQueue: (readonly string[])[] = [];
+  private activeSoftKeyboardCodes: readonly string[] | undefined;
+  private softKeyboardTimer: ReturnType<typeof setTimeout> | undefined;
   private joystickConnection: C64ControlPortDeviceConnection | undefined;
   private hostJoystickLines = 0;
   private joystickPortValue: C64ControlPortNumber | null = null;
@@ -105,9 +147,24 @@ export class BrowserC64Input {
     event.preventDefault();
   };
 
+  private readonly handleBeforeInput = (event: Event): void => {
+    if (!this.isInputEvent(event) || event.isComposing) return;
+
+    let text: string | undefined;
+    if (event.inputType === 'insertLineBreak' || event.inputType === 'insertParagraph') {
+      text = '\n';
+    } else if (event.inputType.startsWith('delete')) {
+      text = '\b';
+    } else if (event.inputType.startsWith('insert')) {
+      text = event.data ?? undefined;
+    }
+    if (!text || !this.enqueueSoftKeyboardText(text)) return;
+    event.preventDefault();
+  };
+
   private readonly handleTargetBlur = (): void => {
     // 宿主可能不会再投递 keyup；机械锁存的 Shift Lock 则不属于瞬态绑定。
-    this.releaseHostBindings();
+    this.releaseKeyboardBindings();
   };
 
   private readonly handleWindowBlur = (): void => {
@@ -139,6 +196,7 @@ export class BrowserC64Input {
     this.target = target;
     target.addEventListener('keydown', this.handleKeyDown);
     target.addEventListener('keyup', this.handleKeyUp);
+    target.addEventListener('beforeinput', this.handleBeforeInput);
     target.addEventListener('blur', this.handleTargetBlur);
 
     this.visibilityDocument = this.resolveDocument(target);
@@ -151,6 +209,7 @@ export class BrowserC64Input {
     if (this.target) {
       this.target.removeEventListener('keydown', this.handleKeyDown);
       this.target.removeEventListener('keyup', this.handleKeyUp);
+      this.target.removeEventListener('beforeinput', this.handleBeforeInput);
       this.target.removeEventListener('blur', this.handleTargetBlur);
     }
     this.visibilityDocument?.removeEventListener('visibilitychange', this.handleVisibilityChange);
@@ -239,16 +298,76 @@ export class BrowserC64Input {
   private releaseHostBindings(): void {
     for (const binding of this.activeBindings.values()) this.releaseBinding(binding);
     this.activeBindings.clear();
-    this.matrixPressCounts.clear();
     this.restoreKeyInput.setRestoreKeyPressed(false);
   }
 
-  private releaseAllBindings(): void {
+  private releaseKeyboardBindings(): void {
     this.releaseHostBindings();
+    this.releaseSoftKeyboardInput();
+  }
+
+  private releaseAllBindings(): void {
+    this.releaseKeyboardBindings();
     this.directJoystickSources.clear();
     this.joystickPressCounts.clear();
     this.hostJoystickLines = 0;
     this.updateJoystickSignals();
+  }
+
+  private enqueueSoftKeyboardText(text: string): boolean {
+    let accepted = false;
+    for (const character of text.replaceAll('\r\n', '\n')) {
+      const codes = this.softKeyboardCodesFor(character);
+      if (!codes) continue;
+      this.softKeyboardQueue.push(codes);
+      accepted = true;
+    }
+    if (accepted) this.startNextSoftKeyboardChord();
+    return accepted;
+  }
+
+  private softKeyboardCodesFor(character: string): readonly string[] | undefined {
+    const normalizedLetter = character.toLowerCase();
+    if (normalizedLetter >= 'a' && normalizedLetter <= 'z') {
+      return [`Key${normalizedLetter.toUpperCase()}`];
+    }
+    if (character >= '0' && character <= '9') return [`Digit${character}`];
+
+    const directCode = SOFT_KEYBOARD_DIRECT_BINDINGS.get(character);
+    if (directCode) return [directCode];
+    const shiftedCode = SOFT_KEYBOARD_SHIFTED_BINDINGS.get(character);
+    return shiftedCode ? ['ShiftLeft', shiftedCode] : undefined;
+  }
+
+  private startNextSoftKeyboardChord(): void {
+    if (this.activeSoftKeyboardCodes || this.softKeyboardTimer) return;
+    const codes = this.softKeyboardQueue.shift();
+    if (!codes) return;
+
+    this.activeSoftKeyboardCodes = codes;
+    for (const code of codes) this.pressMatrixCode(code);
+    this.softKeyboardTimer = setTimeout(() => {
+      this.softKeyboardTimer = undefined;
+      this.releaseActiveSoftKeyboardChord();
+      this.softKeyboardTimer = setTimeout(() => {
+        this.softKeyboardTimer = undefined;
+        this.startNextSoftKeyboardChord();
+      }, SOFT_KEYBOARD_KEY_UP_MS);
+    }, SOFT_KEYBOARD_KEY_DOWN_MS);
+  }
+
+  private releaseSoftKeyboardInput(): void {
+    if (this.softKeyboardTimer !== undefined) clearTimeout(this.softKeyboardTimer);
+    this.softKeyboardTimer = undefined;
+    this.softKeyboardQueue.length = 0;
+    this.releaseActiveSoftKeyboardChord();
+  }
+
+  private releaseActiveSoftKeyboardChord(): void {
+    const codes = this.activeSoftKeyboardCodes;
+    if (!codes) return;
+    this.activeSoftKeyboardCodes = undefined;
+    for (const code of codes) this.releaseMatrixCode(code);
   }
 
   private requireJoystickLines(lines: number): void {
@@ -317,6 +436,10 @@ export class BrowserC64Input {
     if (this.shiftLockLatched === latched) return;
     this.shiftLockLatched = latched;
     this.keyboard.setKeyState('ShiftLock', latched);
+  }
+
+  private isInputEvent(event: Event): event is InputEvent {
+    return 'inputType' in event && typeof (event as InputEvent).inputType === 'string';
   }
 
   private resolveDocument(target: EventTarget): Document | undefined {

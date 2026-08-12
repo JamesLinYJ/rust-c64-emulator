@@ -9,11 +9,11 @@
 // --------------------------------------------------------------------------
 
 import { RefreshCw, Volume2, VolumeX } from 'lucide-react';
-import { useState, type CSSProperties, type PointerEvent, type RefObject } from 'react';
+import { useState, type CSSProperties, type FormEvent, type RefObject } from 'react';
 
 import type { EmulatorPhase, MessageTone } from '../useC64Emulator';
 import type { WebAudioOutputStatus } from '../../platform/WebAudioOutput';
-import { PAL_VIDEO_STANDARD } from '../../video/palVideoStandard';
+import { C64_VIDEO_STANDARDS, type C64VideoStandard } from '../../video/C64VideoStandard';
 import { TouchControls } from './TouchControls';
 
 interface ScreenStyle extends CSSProperties {
@@ -23,11 +23,14 @@ interface ScreenStyle extends CSSProperties {
 export type DisplayScale = 'fit' | '1x' | '2x';
 
 interface EmulatorWorkspaceProps {
+  readonly audioOverrunSamples: number;
   readonly audioStatus: WebAudioOutputStatus;
+  readonly audioUnderrunSamples: number;
   readonly bootComplete: boolean;
   readonly canvasRef: RefObject<HTMLCanvasElement | null>;
   readonly displayScale: DisplayScale;
   readonly framesPerSecond: number | undefined;
+  readonly keyboardInputRef: RefObject<HTMLTextAreaElement | null>;
   readonly message: string;
   readonly messageTone: MessageTone;
   readonly overBudgetFrames: number;
@@ -40,6 +43,7 @@ interface EmulatorWorkspaceProps {
   readonly renderP95Ms: number | undefined;
   readonly sampledFrames: number;
   readonly screenFrameRef: RefObject<HTMLDivElement | null>;
+  readonly videoStandard: C64VideoStandard;
 }
 
 const PHASE_LABELS: Readonly<Record<EmulatorPhase, string>> = {
@@ -49,8 +53,12 @@ const PHASE_LABELS: Readonly<Record<EmulatorPhase, string>> = {
   running: '就绪',
 };
 
-function focusScreen(event: PointerEvent<HTMLDivElement>): void {
-  event.currentTarget.focus();
+function focusKeyboardInput(keyboardInputRef: RefObject<HTMLTextAreaElement | null>): void {
+  keyboardInputRef.current?.focus({ preventScroll: true });
+}
+
+function clearKeyboardInput(event: FormEvent<HTMLTextAreaElement>): void {
+  event.currentTarget.value = '';
 }
 
 function AudioStatusControl({
@@ -95,11 +103,14 @@ function AudioStatusControl({
 }
 
 export function EmulatorWorkspace({
+  audioOverrunSamples,
   audioStatus,
+  audioUnderrunSamples,
   bootComplete,
   canvasRef,
   displayScale,
   framesPerSecond,
+  keyboardInputRef,
   message,
   messageTone,
   overBudgetFrames,
@@ -112,17 +123,19 @@ export function EmulatorWorkspace({
   renderP95Ms,
   sampledFrames,
   screenFrameRef,
+  videoStandard,
 }: EmulatorWorkspaceProps) {
   const [screenFocused, setScreenFocused] = useState(false);
+  const video = C64_VIDEO_STANDARDS[videoStandard];
   const scale = displayScale === '2x' ? 2 : 1;
   const screenStyle: ScreenStyle = {
-    '--screen-width': `${PAL_VIDEO_STANDARD.output.width * scale}px`,
+    '--screen-width': `${video.rasterWidth * scale}px`,
   };
   const bootMessage = phase === 'error' ? message : '正在读取 BASIC、KERNAL 与字符 ROM…';
   const performanceText =
     renderP95Ms === undefined
       ? '正在采样帧耗时'
-      : `p95 ${renderP95Ms.toFixed(2)} ms / ${(1000 / PAL_VIDEO_STANDARD.timing.refreshRateHz).toFixed(2)} ms 预算`;
+      : `p95 ${renderP95Ms.toFixed(2)} ms / ${(1000 / video.refreshRateHz).toFixed(2)} ms 预算`;
 
   return (
     <div className="emulator-workspace">
@@ -138,7 +151,7 @@ export function EmulatorWorkspace({
         <dl className="machine-facts" aria-label="主机规格">
           <div>
             <dt>模式</dt>
-            <dd>PAL</dd>
+            <dd>{video.label}</dd>
           </div>
           <div>
             <dt>内存</dt>
@@ -155,14 +168,27 @@ export function EmulatorWorkspace({
         <div
           ref={screenFrameRef}
           className="screen-frame"
-          tabIndex={0}
           aria-label="C64 屏幕，聚焦后可使用键盘"
           aria-describedby="c64-screen-help"
           aria-busy={phase === 'loading'}
           onBlur={() => setScreenFocused(false)}
           onFocus={() => setScreenFocused(true)}
-          onPointerDown={focusScreen}
+          onPointerDown={() => focusKeyboardInput(keyboardInputRef)}
         >
+          <textarea
+            ref={keyboardInputRef}
+            className="c64-keyboard-capture"
+            aria-label="C64 键盘输入"
+            aria-describedby="c64-screen-help"
+            autoCapitalize="none"
+            autoComplete="off"
+            autoCorrect="off"
+            enterKeyHint="enter"
+            inputMode="text"
+            onInput={clearKeyboardInput}
+            rows={1}
+            spellCheck={false}
+          />
           <div
             className={`screen-host screen-host--${displayScale === 'fit' ? 'fit' : 'fixed'}`}
             style={screenStyle}
@@ -231,9 +257,12 @@ export function EmulatorWorkspace({
         />
         <div className="runtime-telemetry" aria-label="实时执行数据">
           <span>
-            PAL {PAL_VIDEO_STANDARD.timing.refreshRateHz.toFixed(2)} Hz · 呈现{' '}
-            {framesPerSecond ?? '—'} FPS · {performanceText}
+            {video.label} {video.refreshRateHz.toFixed(2)} Hz · 呈现 {framesPerSecond ?? '—'} FPS ·{' '}
+            {performanceText}
             {sampledFrames > 0 ? ` · 超预算 ${overBudgetFrames}/${sampledFrames}` : ''}
+            {audioStatus.state === 'running'
+              ? ` · 音频欠载 ${audioUnderrunSamples} · 音频溢出 ${audioOverrunSamples}`
+              : ''}
           </span>
           <details>
             <summary>诊断</summary>
