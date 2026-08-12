@@ -808,17 +808,18 @@ impl C64Core {
     /// 当前位于内部槽位时返回时钟错误。
     pub fn run_system_cycles(&mut self, cycles: u64) -> Result<(), CoreError> {
         self.clock.advance_system_cycles(0)?;
-        let slots_per_cycle = self.execution.status().effective_slots.get();
         let mut diagnostics_delta = CoreDiagnostics::default();
+        let mut pending_sid_cycles = 0;
         let result = (|| {
-            for _ in 0..cycles {
-                self.run_cpu_slots_accumulating(
-                    u64::from(slots_per_cycle),
-                    &mut diagnostics_delta,
-                )?;
+            let mut elapsed_system_cycles = 0;
+            while elapsed_system_cycles < cycles {
+                elapsed_system_cycles = elapsed_system_cycles.saturating_add(
+                    self.run_cpu_slot(&mut diagnostics_delta, &mut pending_sid_cycles)?,
+                );
             }
             Ok(())
         })();
+        self.devices.clock_sid_cycles(pending_sid_cycles);
         self.diagnostics.merge_runtime(diagnostics_delta);
         result
     }
@@ -2209,6 +2210,114 @@ mod tests {
         core.run_cpu_slots(4).unwrap();
         assert_eq!(core.read_base_ram(0x4000), 1);
         assert_eq!(core.read_base_ram(0x4001), 0x0a);
+    }
+
+    #[test]
+    fn coarse_system_cycle_run_reloads_a_guest_changed_turbo_budget() {
+        let mut core = C64Core::new(CoreConfig {
+            profile: MachineProfile::VmEnhanced,
+            ..CoreConfig::default()
+        });
+        // Enable 20-slot Turbo after twelve Strict cycles, then stay in a
+        // three-cycle JMP loop. The coarse call must still advance twenty
+        // legacy system cycles rather than merely retire twenty CPU slots.
+        for (address, value) in [
+            (0x2000, 0xa9),
+            (0x2001, 0x0a),
+            (0x2002, 0x8d),
+            (0x2003, 0x31),
+            (0x2004, 0xd0),
+            (0x2005, 0xa9),
+            (0x2006, 0x01),
+            (0x2007, 0x8d),
+            (0x2008, 0x30),
+            (0x2009, 0xd0),
+            (0x200a, 0x4c),
+            (0x200b, 0x0a),
+            (0x200c, 0x20),
+        ] {
+            core.write_base_ram(address, value, MemoryWriteSource::HostLoader);
+        }
+        assert!(core.set_cpu_program_counter(0x2000));
+        let started_at = core.timestamp();
+
+        core.run_system_cycles(20).unwrap();
+
+        assert_eq!(
+            core.timestamp(),
+            VirtualTimestamp {
+                system_cycle: started_at.system_cycle + 20,
+                slot: 0,
+            }
+        );
+        assert_eq!(core.execution_status().effective_slots.get(), 20);
+    }
+
+    #[test]
+    fn vm_speed_register_reports_the_locked_auto_tier() {
+        let mut core = C64Core::new(CoreConfig {
+            profile: MachineProfile::VmEnhanced,
+            ..CoreConfig::default()
+        });
+        core.request_auto_turbo(48).unwrap();
+        core.lock_auto_turbo(24).unwrap();
+        for (address, value) in [
+            (0x2000, 0xad),
+            (0x2001, 0x31),
+            (0x2002, 0xd0),
+            (0x2003, 0x8d),
+            (0x2004, 0x00),
+            (0x2005, 0x40),
+        ] {
+            core.write_base_ram(address, value, MemoryWriteSource::HostLoader);
+        }
+        assert!(core.set_cpu_program_counter(0x2000));
+
+        core.run_cpu_slots(8).unwrap();
+
+        assert_eq!(core.read_base_ram(0x4000), 0x0b);
+    }
+
+    #[test]
+    fn vm_speed_aliases_preserve_the_locked_auto_tier_while_disabled() {
+        let mut core = C64Core::new(CoreConfig {
+            profile: MachineProfile::VmEnhanced,
+            ..CoreConfig::default()
+        });
+        core.request_auto_turbo(48).unwrap();
+        core.lock_auto_turbo(24).unwrap();
+        // LDA #$00; STA $d07a; STA $d07b.
+        for (address, value) in [
+            (0x2000, 0xa9),
+            (0x2001, 0x00),
+            (0x2002, 0x8d),
+            (0x2003, 0x7a),
+            (0x2004, 0xd0),
+            (0x2005, 0x8d),
+            (0x2006, 0x7b),
+            (0x2007, 0xd0),
+        ] {
+            core.write_base_ram(address, value, MemoryWriteSource::HostLoader);
+        }
+        assert!(core.set_cpu_program_counter(0x2000));
+
+        core.run_cpu_slots(6).unwrap();
+        assert_eq!(
+            core.execution_status().requested,
+            ExecutionRequest::Turbo(TurboSpeedRequest::manual(24).unwrap())
+        );
+        assert!(!core.execution_status().is_turbo());
+
+        let saved = core.save_state();
+        let mut restored = C64Core::new(CoreConfig {
+            profile: MachineProfile::VmEnhanced,
+            ..CoreConfig::default()
+        });
+        restored.load_state(&saved).unwrap();
+        core = restored;
+
+        core.run_cpu_slots(4).unwrap();
+        assert_eq!(core.execution_status().effective_slots.get(), 24);
     }
 
     #[test]

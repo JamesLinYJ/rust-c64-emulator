@@ -343,7 +343,13 @@ impl ExecutionController {
         match self.status.requested {
             ExecutionRequest::Strict => SlotsPerSystemCycle::STRICT,
             ExecutionRequest::Turbo(TurboSpeedRequest::Manual(slots)) => slots,
-            ExecutionRequest::Turbo(TurboSpeedRequest::Auto { maximum }) => maximum,
+            ExecutionRequest::Turbo(TurboSpeedRequest::Auto { maximum }) => {
+                if self.status.awaiting_auto_calibration {
+                    maximum
+                } else {
+                    self.status.effective_slots
+                }
+            }
         }
     }
 
@@ -368,8 +374,7 @@ impl ExecutionController {
             TurboControlCommand::SetEnabled { enabled, fallback } => {
                 let configured = match self.status.requested {
                     ExecutionRequest::Strict => fallback.unwrap_or(SlotsPerSystemCycle::STRICT),
-                    ExecutionRequest::Turbo(TurboSpeedRequest::Manual(slots)) => slots,
-                    ExecutionRequest::Turbo(TurboSpeedRequest::Auto { maximum }) => maximum,
+                    ExecutionRequest::Turbo(_) => self.configured_slots(),
                 };
                 if configured.is_strict() {
                     self.reset_to_strict();
