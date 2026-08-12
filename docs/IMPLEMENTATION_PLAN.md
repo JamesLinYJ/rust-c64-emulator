@@ -91,7 +91,8 @@ Vite bundle 的缺口，远端 [CI run 31496827909](https://github.com/JamesLinY
 - [x] 实现物理页能力、代码版本、映射 generation 和统一地址空间分类。
 - [ ] 实现强顺序 BusBridge、VIC 优先、REU/DMA 所有权和精确事件退出。
 - [ ] 实现自修改代码、隐藏 RAM、Cartridge bank 和 DMA 写入失效。
-- [ ] 实现 opt-in `$D030/$D031`、`$D07A/$D07B`，Reset 恢复 Strict/1MHz。
+- [x] 实现 opt-in `$D030/$D031` 速度选择/启停与 `$D07A/$D07B` 兼容别名，Reset 恢复 Strict/1MHz。
+- [ ] 补齐 VM Enhanced `$D031` bit 7 bad-line 时序策略。
 
 验收：Strict/Turbo 随机差分和全部桥接边界通过，不存在软件专用路径。
 
@@ -104,7 +105,13 @@ Turbo CPU 与 REU DMA 访问已通过强顺序 `BusBridge`：处理器端口映�
 REU 使用独立 `ReuDmaBus`，不会把非 CPU 主控分派带入 `ClockedCpuBus` 热路径；提交 `1f385fb`
 的远端 CI 五项通过，Chrome、Edge、Firefox、WebKit 均为 50 host FPS，p95 分别为 1.90、1.70、
 14.00、3.00 ms，全部 0/120 超预算。Strict CPU 继续走无额外桥接 trace 的原周期精确热路径。
-VIC/Enhanced DMA 主控的统一桥接、block 执行器精确退出和本节其余验收尚未完成，因此 M2 不标记完成。
+提交 `791ec4b` 进一步加入 profile opt-in 的 U64E2 1/2/3/4/6/8/10/12/14/16/20/24/32/40/48/64
+速度表、`$D030` 启停及 SuperCPU `$D07A/$D07B` normal/固定 20 MHz 语义；Stock 地址继续保持 VIC
+镜像。客机写入在 CPU 总线槽完成后提交，Turbo 中途换速会结束当前整数系统周期再安装新预算，
+配置但停用的档位可由现有完整状态字段无损保存。远端
+[CI run 31548533307](https://github.com/JamesLinYJ/rust-c64-emulator/actions/runs/31548533307)
+全部成功，四浏览器均为 50 host FPS。VIC/Enhanced DMA 主控的统一桥接、`$D031` bit 7、block
+执行器精确退出和本节其余验收尚未完成，因此 M2 不标记完成。
 
 ## M3：Turbo 执行引擎
 
