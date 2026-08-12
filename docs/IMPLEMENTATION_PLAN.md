@@ -110,8 +110,12 @@ REU 使用独立 `ReuDmaBus`，不会把非 CPU 主控分派带入 `ClockedCpuBu
 镜像。客机写入在 CPU 总线槽完成后提交，Turbo 中途换速会结束当前整数系统周期再安装新预算，
 配置但停用的档位可由现有完整状态字段无损保存。远端
 [CI run 31548533307](https://github.com/JamesLinYJ/rust-c64-emulator/actions/runs/31548533307)
-全部成功，四浏览器均为 50 host FPS。VIC/Enhanced DMA 主控的统一桥接、`$D031` bit 7、block
-执行器精确退出和本节其余验收尚未完成，因此 M2 不标记完成。
+全部成功，四浏览器均为 50 host FPS。提交 `bd6df12` 又修复粗粒度系统周期调用在客机中途换速
+后按入口档位提前返回的问题，并让 Auto 寄存器读回、停用、完整状态恢复及再启用保持实际锁定
+档位；完整固定参考链与远端
+[CI run 31550741438](https://github.com/JamesLinYJ/rust-c64-emulator/actions/runs/31550741438)
+均通过。VIC/Enhanced DMA 主控的统一桥接、`$D031` bit 7、block 执行器精确退出和本节其余验收
+尚未完成，因此 M2 不标记完成。
 
 ## M3：Turbo 执行引擎
 
